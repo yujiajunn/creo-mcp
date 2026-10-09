@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "udf_name": "node",
+  "udf_file": "D:\\PTC\\Creo13.4\\Creo 13.4.1.0\\Common Files\\vbapi\\vbapi_examples\\models\\node.gph",
+  "sha256": "A3239CB7BCB521C6D26094384C1FA72120DF0EBB11F7050A91E62D628529312B",
+  "qualified_creo_versions": [
+    "13.4.1.0"
+  ],
+  "allowed_model_kinds": [
+    "part"
+  ],
+  "verified_non_interactive": false,
+  "references": [
+    {
+      "prompt": "REF_CSYS",
+      "item_type": "coordinate_system"
+    }
+  ],
+  "variant_dimensions": [
+    {
+      "name": "d11",
+      "unit": "mm",
+      "minimum": 1.0,
+      "maximum": 100.0
+    }
+  ]
+}
