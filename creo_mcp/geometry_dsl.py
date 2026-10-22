@@ -10,14 +10,16 @@ the same guarded path used by the clearance-tray pipeline.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from .concept_geometry import measure_shape_extent
 from .errors import CreoMcpError
 from .models import BoxExtent, CreoModelInfo
+from .step import resolve_step_path
 
 MAX_DEPTH = 8
 MAX_CHILDREN = 32
@@ -85,14 +87,57 @@ class PatternNode(_Node):
     child: "GeometryNode"
 
 
+class SourceNode(_Node):
+    op: Literal["source"]
+    path: str = Field(
+        description=(
+            "Absolute path to an existing millimetre .step/.stp file whose solid takes "
+            "part in the booleans as-is."
+        )
+    )
+    solid_index: int = Field(
+        default=1,
+        ge=1,
+        le=64,
+        description="1-based index of the solid to use when the file holds several.",
+    )
+
+
+class TransformNode(_Node):
+    op: Literal["transform"]
+    child: "GeometryNode"
+    translate: Vec3 = Field(default_factory=Vec3)
+    rotate_axis: AxisToken | None = None
+    rotate_angle_deg: float | None = Field(default=None, ge=-360.0, le=360.0)
+    rotate_about: Vec3 = Field(default_factory=Vec3)
+
+    @model_validator(mode="after")
+    def _rotation_needs_axis(self) -> "TransformNode":
+        if (self.rotate_axis is None) != (self.rotate_angle_deg is None):
+            raise ValueError(
+                "rotate_axis and rotate_angle_deg must be provided together."
+            )
+        return self
+
+
 GeometryNode = Annotated[
-    Union[BoxNode, CylinderNode, SphereNode, BooleanNode, MirrorNode, PatternNode],
+    Union[
+        BoxNode,
+        CylinderNode,
+        SphereNode,
+        BooleanNode,
+        MirrorNode,
+        PatternNode,
+        SourceNode,
+        TransformNode,
+    ],
     Field(discriminator="op"),
 ]
 
 BooleanNode.model_rebuild()
 MirrorNode.model_rebuild()
 PatternNode.model_rebuild()
+TransformNode.model_rebuild()
 
 _GEOMETRY_NODE_ADAPTER: TypeAdapter = TypeAdapter(GeometryNode)
 
@@ -104,9 +149,11 @@ class BuildGeometryRequest(BaseModel):
 
     program: GeometryNode = Field(
         description=(
-            "Geometry program: box/cylinder/sphere primitives in millimetres, combined "
-            "with union/difference/intersect, mirror, and linear_pattern nodes. The "
-            "program must resolve to exactly one closed solid within 2000 mm."
+            "Geometry program: box/cylinder/sphere primitives plus source (an existing "
+            "millimetre STEP file used as an operand) combined with "
+            "union/difference/intersect, mirror, linear_pattern, and transform "
+            "(rotate about an axis + translate), all in millimetres. The program must "
+            "resolve to exactly one closed solid within 2000 mm."
         )
     )
     part_name: str = Field(
@@ -180,9 +227,11 @@ def _api() -> dict[str, Any]:
             BRepPrimAPI_MakeSphere,
         )
         from OCP.GProp import GProp_GProps
+        from OCP.IFSelect import IFSelect_RetDone
+        from OCP.STEPControl import STEPControl_Reader
         from OCP.TopAbs import TopAbs_SOLID
         from OCP.TopExp import TopExp_Explorer
-        from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+        from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
     except ImportError as exc:
         raise CreoMcpError(
             "The build_geometry tool requires the optional 'concept-geometry' extra. "
@@ -199,8 +248,11 @@ def _api() -> dict[str, Any]:
         "BRepPrimAPI_MakeCylinder": BRepPrimAPI_MakeCylinder,
         "BRepPrimAPI_MakeSphere": BRepPrimAPI_MakeSphere,
         "GProp_GProps": GProp_GProps,
+        "IFSelect_RetDone": IFSelect_RetDone,
+        "STEPControl_Reader": STEPControl_Reader,
         "TopAbs_SOLID": TopAbs_SOLID,
         "TopExp_Explorer": TopExp_Explorer,
+        "gp_Ax1": gp_Ax1,
         "gp_Ax2": gp_Ax2,
         "gp_Dir": gp_Dir,
         "gp_Pnt": gp_Pnt,
@@ -245,6 +297,41 @@ def _require_valid(shape: Any, path: str, api: dict[str, Any]) -> Any:
             "faces, zero-thickness cuts, or tools that fully remove their argument."
         )
     return shape
+
+
+def _load_source(node: SourceNode, api: dict[str, Any], path: str) -> Any:
+    step_path = resolve_step_path(node.path)
+    reader = api["STEPControl_Reader"]()
+    if reader.ReadFile(str(step_path)) != api["IFSelect_RetDone"]:
+        raise CreoMcpError(
+            f"geometry node {path}: OpenCascade could not read STEP file: {step_path}"
+        )
+    if reader.TransferRoots() <= 0:
+        raise CreoMcpError(
+            f"geometry node {path}: OpenCascade could not transfer STEP file: {step_path}"
+        )
+    shape = reader.OneShape()
+    explorer = api["TopExp_Explorer"]()
+    explorer.Init(shape, api["TopAbs_SOLID"])
+    solids: list[Any] = []
+    while explorer.More():
+        solids.append(explorer.Current())
+        explorer.Next()
+    if not solids:
+        raise CreoMcpError(
+            f"geometry node {path}: {step_path} contains no solid bodies; surface or "
+            "mid-sheet models cannot participate in solid booleans."
+        )
+    if node.solid_index > len(solids):
+        raise CreoMcpError(
+            f"geometry node {path}: solid_index={node.solid_index} exceeds the "
+            f"{len(solids)} solid bodies found in {step_path.name}."
+        )
+    return _require_valid(
+        solids[node.solid_index - 1],
+        f"{path} (source {step_path.name} solid {node.solid_index})",
+        api,
+    )
 
 
 def _build(node: GeometryNode, api: dict[str, Any], path: str, stats: dict[str, int]) -> Any:
@@ -338,6 +425,29 @@ def _build_node(node: GeometryNode, api: dict[str, Any], path: str, stats: dict[
                 )
             result = _require_valid(fuse.Shape(), f"{path} (copy {copy_index})", api)
         return result
+    if isinstance(node, SourceNode):
+        return _load_source(node, api, path)
+    if isinstance(node, TransformNode):
+        shape = _build(node.child, api, f"{path}.child", stats)
+        if node.rotate_axis is not None and node.rotate_angle_deg is not None:
+            rotation = api["gp_Trsf"]()
+            rotation.SetRotation(
+                api["gp_Ax1"](
+                    api["gp_Pnt"](*node.rotate_about.as_tuple()),
+                    api["gp_Dir"](*_AXIS_VECTORS[node.rotate_axis]),
+                ),
+                math.radians(node.rotate_angle_deg),
+            )
+            shape = _require_valid(
+                api["BRepBuilderAPI_Transform"](shape, rotation, True).Shape(),
+                f"{path} (after rotation)",
+                api,
+            )
+        if node.translate.as_tuple() != (0.0, 0.0, 0.0):
+            translation = api["gp_Trsf"]()
+            translation.SetTranslation(api["gp_Vec"](*node.translate.as_tuple()))
+            shape = api["BRepBuilderAPI_Transform"](shape, translation, True).Shape()
+        return shape
     raise CreoMcpError(f"unsupported geometry node at {path}.")
 
 

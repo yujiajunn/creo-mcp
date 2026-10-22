@@ -1284,11 +1284,12 @@ def create_server() -> FastMCP:
         title="Build Solid From Geometry Program",
         description=(
             "Build one solid from a constrained JSON geometry program — box/cylinder/sphere "
-            "primitives in millimetres combined with union/difference/intersect, mirror, "
-            "and linear_pattern — validate it as exactly one closed solid (max 2000 mm), "
-            "export STEP, and import it as a new saved Creo part under a name that must "
-            "not exist yet. The imported feature is named GENERATED_SOLID; this produces "
-            "a solid-body concept, not parametric sketch features. Requires "
+            "primitives plus source (existing millimetre STEP solids as operands) combined "
+            "with union/difference/intersect, mirror, linear_pattern, and transform "
+            "(rotate+translate) in millimetres — validate it as exactly one closed solid "
+            "(max 2000 mm), export STEP, and import it as a new saved Creo part under a "
+            "name that must not exist yet. The imported feature is named GENERATED_SOLID; "
+            "this produces a solid-body concept, not parametric sketch features. Requires "
             "confirmation='build_geometry'. Emits progress notifications and, when "
             "activated, returns an automatic Creo window screenshot."
         ),
