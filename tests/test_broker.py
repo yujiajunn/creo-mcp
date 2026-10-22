@@ -40,7 +40,9 @@ class BrokerTests(unittest.TestCase):
             mock.patch("creo_mcp.server.get_status", _fake_status),
             mock.patch(
                 "creo_mcp.server._operation_response",
-                lambda operation, payload: _fake_operation(operation, payload, calls),
+                lambda operation, payload, progress_cb=None: _fake_operation(
+                    operation, payload, calls
+                ),
             ),
         ]
         for patcher in patches:
@@ -127,6 +129,54 @@ class BrokerTests(unittest.TestCase):
             conn.close()
             self.assertFalse(response["ok"])
             self.assertIn("protocol", response["error"].lower())
+        finally:
+            broker.call({"kind": "shutdown"}, timeout_seconds=5, address=pipe)
+            thread.join(timeout=5)
+
+    def test_progress_frames_reach_requesting_client(self) -> None:
+        pipe = _test_pipe()
+
+        def fake_response(operation, payload, progress_cb=None):
+            if progress_cb is not None:
+                progress_cb(25, "中间阶段")
+                progress_cb(50, "后半阶段")
+            return {"ok": True, "operation_id": "op-1", "result": {"operation": operation}}
+
+        patches = [
+            mock.patch("creo_mcp.bridge.persistent_creo_connection", _fake_connection),
+            mock.patch("creo_mcp.server.get_status", _fake_status),
+            mock.patch("creo_mcp.server._operation_response", fake_response),
+        ]
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        thread = threading.Thread(
+            target=broker.run_broker, kwargs={"address": pipe}, daemon=True
+        )
+        thread.start()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and broker.ping(0.2, address=pipe) is None:
+            time.sleep(0.05)
+        try:
+            frames: list[tuple[float, str]] = []
+            result = broker.call(
+                {"kind": "operation", "operation": "slow_op", "payload": {}},
+                timeout_seconds=5,
+                address=pipe,
+                on_progress=lambda frame: frames.append(
+                    (frame["progress"], frame["message"])
+                ),
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(frames, [(25, "中间阶段"), (50, "后半阶段")])
+
+            # A client that does not ask for progress must not see frames either.
+            plain = broker.call(
+                {"kind": "operation", "operation": "slow_op", "payload": {}},
+                timeout_seconds=5,
+                address=pipe,
+            )
+            self.assertTrue(plain["ok"])
         finally:
             broker.call({"kind": "shutdown"}, timeout_seconds=5, address=pipe)
             thread.join(timeout=5)

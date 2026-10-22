@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import queue
@@ -14,7 +15,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.fastmcp import Context, FastMCP, Image
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
 from . import broker
@@ -281,7 +282,9 @@ def _run_probe() -> int:
         return 1
 
 
-def _execute_operation(operation: str, payload: dict[str, Any]) -> Any:
+def _execute_operation(
+    operation: str, payload: dict[str, Any], progress_cb: Any = None
+) -> Any:
     """Validate and execute one named Creo operation in the current worker process."""
     if operation == "create_empty_part":
         return create_empty_part(CreatePartRequest.model_validate(payload))
@@ -291,20 +294,26 @@ def _execute_operation(operation: str, payload: dict[str, Any]) -> Any:
         return create_packaging_box(CreatePackagingBoxRequest.model_validate(payload))
     if operation == "plan_product_clearance_tray":
         return plan_product_clearance_tray(
-            ProductClearanceTrayPlanRequest.model_validate(payload)
+            ProductClearanceTrayPlanRequest.model_validate(payload),
+            progress_cb=progress_cb,
         )
     if operation == "create_product_clearance_tray":
         return create_product_clearance_tray(
-            CreateProductClearanceTrayRequest.model_validate(payload)
+            CreateProductClearanceTrayRequest.model_validate(payload),
+            progress_cb=progress_cb,
         )
     if operation == "inspect_step_solids":
         return inspect_step_solids(InspectStepRequest.model_validate(payload))
     if operation == "inspect_step":
         return inspect_step_file(InspectStepRequest.model_validate(payload))
     if operation == "import_step":
-        return import_step(ImportStepRequest.model_validate(payload))
+        return import_step(
+            ImportStepRequest.model_validate(payload), progress_cb=progress_cb
+        )
     if operation == "import_cad":
-        return import_cad(ImportCadRequest.model_validate(payload))
+        return import_cad(
+            ImportCadRequest.model_validate(payload), progress_cb=progress_cb
+        )
     if operation == "inspect_model_geometry":
         return inspect_model_geometry(InspectModelGeometryRequest.model_validate(payload))
     if operation == "inspect_geometry_details":
@@ -316,7 +325,9 @@ def _execute_operation(operation: str, payload: dict[str, Any]) -> Any:
     if operation == "validate_udf_manifest":
         return validate_udf_manifest(ValidateUdfManifestRequest.model_validate(payload))
     if operation == "open_native_model":
-        return open_native_model(OpenNativeModelRequest.model_validate(payload))
+        return open_native_model(
+            OpenNativeModelRequest.model_validate(payload), progress_cb=progress_cb
+        )
     if operation == "place_udf":
         return place_udf(PlaceUdfRequest.model_validate(payload))
     if operation == "qualify_udf":
@@ -332,12 +343,14 @@ def _execute_operation(operation: str, payload: dict[str, Any]) -> Any:
     raise CreoMcpError(f"Unsupported internal Creo operation: {operation}")
 
 
-def _operation_response(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _operation_response(
+    operation: str, payload: dict[str, Any], progress_cb: Any = None
+) -> dict[str, Any]:
     """Execute and log one operation, returning its machine-readable response."""
     operation_id = uuid.uuid4().hex
     started = time.perf_counter()
     try:
-        result = _execute_operation(operation, payload)
+        result = _execute_operation(operation, payload, progress_cb=progress_cb)
         duration_ms = round((time.perf_counter() - started) * 1000)
         logged = append_operation_result(operation_id, operation, duration_ms, result)
         return {
@@ -600,12 +613,16 @@ def _shutdown_persistent_worker() -> None:
         pass
 
 
-def _call_creo(request: dict[str, Any], *, timeout_seconds: int) -> dict[str, Any]:
+def _call_creo(
+    request: dict[str, Any], *, timeout_seconds: int, on_progress: Any = None
+) -> dict[str, Any]:
     """Route one request through the singleton broker (or the legacy worker)."""
     if os.environ.get("CREO_MCP_TRANSPORT", "broker").lower() == "worker":
         return _persistent_worker_call(request, timeout_seconds=timeout_seconds)
     try:
-        return broker.call(request, timeout_seconds=timeout_seconds)
+        return broker.call(
+            request, timeout_seconds=timeout_seconds, on_progress=on_progress
+        )
     except broker.BrokerError as exc:
         raise CreoMcpError(str(exc)) from exc
 
@@ -621,15 +638,66 @@ def _status_from_isolated_process() -> CreoStatus:
     return CreoStatus.model_validate(payload["result"])
 
 
-def _run_isolated_operation(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _run_isolated_operation(
+    operation: str, payload: dict[str, Any], on_progress: Any = None
+) -> dict[str, Any]:
     """Execute one explicit operation through the single-instance Creo broker."""
     result = _call_creo(
         {"kind": "operation", "operation": operation, "payload": payload},
         timeout_seconds=OPERATION_TIMEOUT_SECONDS,
+        on_progress=on_progress,
     )
     if not result.get("ok"):
         raise CreoMcpError(str(result.get("error", "Unknown Creo operation error.")))
     return result["result"]
+
+
+async def _drain_progress(frames: queue.SimpleQueue, ctx: Context) -> None:
+    while True:
+        try:
+            frame = frames.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            await ctx.report_progress(
+                float(frame.get("progress", 0.0)),
+                total=frame.get("total"),
+                message=frame.get("message"),
+            )
+        except Exception:
+            pass
+
+
+async def _await_with_progress(
+    task: asyncio.Task, frames: queue.SimpleQueue, ctx: Context
+) -> Any:
+    try:
+        while not task.done():
+            await asyncio.sleep(0.1)
+            await _drain_progress(frames, ctx)
+        await _drain_progress(frames, ctx)
+        return await task
+    except asyncio.CancelledError:
+        # The client hung up; the worker call cannot be cancelled mid-COM, so let
+        # it finish in the background and record that we stopped relaying.
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+        raise
+
+
+async def _run_isolated_operation_with_progress(
+    operation: str, payload: dict[str, Any], ctx: Context
+) -> dict[str, Any]:
+    """Run a long broker operation in a worker thread and relay progress to the client.
+
+    The blocking broker call must leave the event loop free so MCP
+    ``notifications/progress`` frames can actually be sent while the operation
+    runs; progress frames are queued thread-safely and drained by the relay.
+    """
+    frames: queue.SimpleQueue = queue.SimpleQueue()
+    task = asyncio.create_task(
+        asyncio.to_thread(_run_isolated_operation, operation, payload, frames.put)
+    )
+    return await _await_with_progress(task, frames, ctx)
 
 
 def create_server() -> FastMCP:
@@ -901,11 +969,21 @@ def create_server() -> FastMCP:
         annotations=READ_ONLY_ANNOTATIONS,
         structured_output=True,
     )
-    def creo_plan_product_clearance_tray(
-        request: ProductClearanceTrayPlanRequest,
+    async def creo_plan_product_clearance_tray(
+        request: ProductClearanceTrayPlanRequest, ctx: Context
     ) -> ProductClearanceTrayPlan:
         """Plan a verified full-geometry safety baseline before forming optimization."""
-        return plan_product_clearance_tray(request)
+        frames: queue.SimpleQueue = queue.SimpleQueue()
+
+        def _plan_cb(value: float, message: str) -> None:
+            frames.put({"progress": value, "total": 100, "message": message})
+
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                plan_product_clearance_tray, request, progress_cb=_plan_cb
+            )
+        )
+        return await _await_with_progress(task, frames, ctx)
 
     @server.tool(
         name="creo_inspect_step_solids",
@@ -1081,14 +1159,18 @@ def create_server() -> FastMCP:
         annotations=WRITE_ANNOTATIONS,
         structured_output=True,
     )
-    def creo_open_native_model(
-        request: OpenNativeModelRequest,
+    async def creo_open_native_model(
+        request: OpenNativeModelRequest, ctx: Context
     ) -> OpenNativeModelResult:
         """Load and measure one native Creo model without changing its source file."""
         result = OpenNativeModelResult.model_validate(
-            _run_isolated_operation("open_native_model", request.model_dump())
+            await _run_isolated_operation_with_progress(
+                "open_native_model", request.model_dump(), ctx
+            )
         )
-        return _with_preview(result) if request.activate else result
+        if request.activate:
+            return await asyncio.to_thread(_with_preview, result)
+        return result
 
     @server.tool(
         name="creo_create_packaging_box",
@@ -1125,17 +1207,20 @@ def create_server() -> FastMCP:
         annotations=WRITE_ANNOTATIONS,
         structured_output=True,
     )
-    def creo_create_product_clearance_tray(
-        request: CreateProductClearanceTrayRequest,
+    async def creo_create_product_clearance_tray(
+        request: CreateProductClearanceTrayRequest, ctx: Context
     ) -> CreateProductClearanceTrayResult:
         """Create one hard-edge full-product safety baseline."""
         result = CreateProductClearanceTrayResult.model_validate(
-            _run_isolated_operation(
+            await _run_isolated_operation_with_progress(
                 "create_product_clearance_tray",
                 request.model_dump(),
+                ctx,
             )
         )
-        return _with_preview(result) if request.activate else result
+        if request.activate:
+            return await asyncio.to_thread(_with_preview, result)
+        return result
 
     @server.tool(
         name="creo_import_cad",
@@ -1150,12 +1235,18 @@ def create_server() -> FastMCP:
         annotations=WRITE_ANNOTATIONS,
         structured_output=True,
     )
-    def creo_import_cad(request: ImportCadRequest) -> ImportCadResult:
+    async def creo_import_cad(
+        request: ImportCadRequest, ctx: Context
+    ) -> ImportCadResult:
         """Import and measure one new unsaved Creo model from a supported CAD source."""
         result = ImportCadResult.model_validate(
-            _run_isolated_operation("import_cad", request.model_dump())
+            await _run_isolated_operation_with_progress(
+                "import_cad", request.model_dump(), ctx
+            )
         )
-        return _with_preview(result) if request.activate else result
+        if request.activate:
+            return await asyncio.to_thread(_with_preview, result)
+        return result
 
     @server.tool(
         name="creo_import_step",
@@ -1169,12 +1260,18 @@ def create_server() -> FastMCP:
         annotations=WRITE_ANNOTATIONS,
         structured_output=True,
     )
-    def creo_import_step(request: ImportStepRequest) -> ImportStepResult:
+    async def creo_import_step(
+        request: ImportStepRequest, ctx: Context
+    ) -> ImportStepResult:
         """Import and measure one new unsaved Creo model from STEP."""
         result = ImportStepResult.model_validate(
-            _run_isolated_operation("import_step", request.model_dump())
+            await _run_isolated_operation_with_progress(
+                "import_step", request.model_dump(), ctx
+            )
         )
-        return _with_preview(result) if request.activate else result
+        if request.activate:
+            return await asyncio.to_thread(_with_preview, result)
+        return result
 
     return server
 

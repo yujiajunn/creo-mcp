@@ -1193,6 +1193,8 @@ def _validate_expected_extent(measured: BoxExtent, expected: BoxDimensions) -> N
 
 def create_product_clearance_tray(
     request: CreateProductClearanceTrayRequest,
+    *,
+    progress_cb: Any = None,
 ) -> CreateProductClearanceTrayResult:
     """Create one protected hard-edge tray from a verified product-clearance plan."""
     output_directory = Path(request.output_directory).expanduser()
@@ -1205,10 +1207,18 @@ def create_product_clearance_tray(
         )
     _ensure_new_part_name(output_directory, request.part_name)
 
+    _progress(progress_cb, 5, "正在复核方案与产品文件")
     planning_request = ProductClearanceTrayPlanRequest.model_validate(
         request.model_dump(exclude={"plan_id", "confirmation", "activate"})
     )
-    plan = plan_product_clearance_tray(planning_request)
+    plan = plan_product_clearance_tray(
+        planning_request,
+        progress_cb=(
+            None
+            if progress_cb is None
+            else lambda v, m: _progress(progress_cb, 5 + v * 0.4, m)
+        ),
+    )
     if request.plan_id != plan.plan_id:
         raise CreoMcpError(
             "plan_id does not match the current product file and clearance parameters."
@@ -1217,7 +1227,9 @@ def create_product_clearance_tray(
     result: CreateProductClearanceTrayResult | None = None
     with tempfile.TemporaryDirectory(prefix="creo-mcp-clearance-") as raw_directory:
         generated_step = Path(raw_directory) / f"{request.part_name}.step"
+        _progress(progress_cb, 50, "正在生成避让 STEP 几何")
         generated_extent = export_product_clearance_tray_step(plan, generated_step)
+        _progress(progress_cb, 55, "正在校验生成的 STEP")
         _validate_expected_extent(generated_extent, plan.expected_extent_mm)
         source = inspect_step_file(InspectStepRequest(step_path=str(generated_step)))
         if (
@@ -1230,6 +1242,7 @@ def create_product_clearance_tray(
             )
 
         with _connected_session() as (session, _):
+            _progress(progress_cb, 60, "正在导入 Creo")
             _ensure_model_not_loaded(session, request.part_name)
             session.ChangeDirectory(str(output_directory))
             created, detected_type = _import_new_model(
@@ -1241,16 +1254,19 @@ def create_product_clearance_tray(
             )
             if detected_type != CREO_PART_MODEL_TYPE:
                 raise CreoMcpError("Creo did not import the generated concept as a part.")
+            _progress(progress_cb, 80, "正在命名特征并再生")
             _rename_generated_import_feature(created, "PRODUCT_CLEARANCE_BREP")
             _apply_new_model_parameters(created, _clearance_parameter_updates(plan))
             created.Regenerate(None)
 
+            _progress(progress_cb, 90, "正在测量并保存")
             length_unit = _length_unit_name(created)
             measured_extent = _extent_to_millimetres(_measure_extent(created), length_unit)
             _validate_expected_extent(measured_extent, plan.expected_extent_mm)
             created.Save()
 
             if request.activate:
+                _progress(progress_cb, 95, "正在打开模型窗口")
                 _activate_and_repaint_model(session, created)
 
             created_model = _model_info(created)
@@ -1273,6 +1289,7 @@ def create_product_clearance_tray(
                 applied_plan=plan,
                 measured_extent_mm=measured_extent,
             )
+            _progress(progress_cb, 100, "托盘创建完成")
 
     if result is None:
         raise CreoMcpError("Product-clearance concept creation did not produce a result.")
@@ -1322,20 +1339,38 @@ def _volume_in_millimetres(model: Any, length_unit: str) -> float | None:
         return None
 
 
-def open_native_model(request: OpenNativeModelRequest) -> OpenNativeModelResult:
+def _progress(cb: Any, value: float, message: str) -> None:
+    """Report one progress step through an optional callback; never fails the work."""
+    if cb is None:
+        return
+    try:
+        cb(value, message)
+    except Exception:
+        pass
+
+
+def open_native_model(
+    request: OpenNativeModelRequest,
+    *,
+    progress_cb: Any = None,
+) -> OpenNativeModelResult:
     """Load and measure a native Creo part or assembly without saving it."""
     model_path, model_type, model_kind = _resolve_native_model_path(request.model_path)
     with _connected_session() as (session, _):
+        _progress(progress_cb, 15, "正在检索原生模型")
         model = _retrieve_native_model(session, model_path, model_type)
+        _progress(progress_cb, 50, "正在测量包络与体积")
         length_unit = _length_unit_name(model)
         measured_extent = _extent_to_millimetres(_measure_extent(model), length_unit)
         volume_mm3 = _volume_in_millimetres(model, length_unit)
         if request.activate:
+            _progress(progress_cb, 75, "正在打开模型窗口")
             _activate_and_repaint_model(session, model)
 
         model_info = _model_info(model)
         if model_info is None:
             raise CreoMcpError("Creo loaded the native model but returned no model metadata.")
+        _progress(progress_cb, 100, "打开完成")
         return OpenNativeModelResult(
             source_path=str(model_path),
             model=model_info,
@@ -1348,12 +1383,17 @@ def open_native_model(request: OpenNativeModelRequest) -> OpenNativeModelResult:
         )
 
 
-def import_cad(request: ImportCadRequest) -> ImportCadResult:
+def import_cad(
+    request: ImportCadRequest,
+    *,
+    progress_cb: Any = None,
+) -> ImportCadResult:
     """Import a supported CAD file as a new unsaved Creo model and measure it."""
     source = resolve_cad_source(request)
     source_path = Path(source.source_path)
     import_type = CAD_IMPORT_TYPE[source.source_format]
     with _connected_session() as (session, _):
+        _progress(progress_cb, 20, f"正在将 {source.source_format} 导入 Creo")
         created, detected_type = _import_new_model(
             session,
             source_path,
@@ -1362,10 +1402,12 @@ def import_cad(request: ImportCadRequest) -> ImportCadResult:
             request.model_name,
         )
 
+        _progress(progress_cb, 60, "正在测量几何")
         length_unit = _length_unit_name(created)
         measured_extent = _extent_to_millimetres(_measure_extent(created), length_unit)
         volume_mm3 = _volume_in_millimetres(created, length_unit)
         if request.activate:
+            _progress(progress_cb, 85, "正在打开模型窗口")
             _activate_and_repaint_model(session, created)
 
         created_model = _model_info(created)
@@ -1384,11 +1426,17 @@ def import_cad(request: ImportCadRequest) -> ImportCadResult:
         )
 
 
-def import_step(request: ImportStepRequest) -> ImportStepResult:
+def import_step(
+    request: ImportStepRequest,
+    *,
+    progress_cb: Any = None,
+) -> ImportStepResult:
     """Import a STEP file as a new unsaved Creo part or assembly and measure it."""
     step_path = resolve_step_path(request.step_path)
+    _progress(progress_cb, 10, "正在校验 STEP 文件")
     source = inspect_step_file(InspectStepRequest(step_path=str(step_path)))
     with _connected_session() as (session, _):
+        _progress(progress_cb, 25, "正在将 STEP 导入 Creo")
         created, detected_type = _import_new_model(
             session,
             step_path,
@@ -1397,9 +1445,11 @@ def import_step(request: ImportStepRequest) -> ImportStepResult:
             request.model_name,
         )
 
+        _progress(progress_cb, 65, "正在测量几何")
         length_unit = _length_unit_name(created)
         measured_extent = _extent_to_millimetres(_measure_extent(created), length_unit)
         if request.activate:
+            _progress(progress_cb, 85, "正在打开模型窗口")
             _activate_and_repaint_model(session, created)
 
         created_model = _model_info(created)

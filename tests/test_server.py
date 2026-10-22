@@ -6,7 +6,10 @@ import asyncio
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from creo_mcp import server as server_module
+from creo_mcp.errors import CreoMcpError
 from creo_mcp.server import create_server
 from creo_mcp.version import SERVER_NAME, SERVER_VERSION
 
@@ -67,6 +70,46 @@ class ServerContractTests(unittest.TestCase):
 
         self.assertEqual(len(docs), 5)
         self.assertTrue(all(text.strip() for text in docs.values()))
+
+
+class ProgressRelayTests(unittest.IsolatedAsyncioTestCase):
+    class _RecordingContext:
+        def __init__(self) -> None:
+            self.reports: list[tuple[float, str | None]] = []
+
+        async def report_progress(self, progress, total=None, message=None) -> None:
+            self.reports.append((progress, message))
+
+    async def test_broker_progress_frames_are_relayed(self) -> None:
+        def fake_call_creo(request, *, timeout_seconds, on_progress=None):
+            self.assertEqual(request["kind"], "operation")
+            self.assertIsNotNone(on_progress)
+            on_progress(
+                {"kind": "progress", "progress": 40.0, "total": 100, "message": "导入中"}
+            )
+            on_progress(
+                {"kind": "progress", "progress": 100.0, "total": 100, "message": "完成"}
+            )
+            return {"ok": True, "result": {"done": True}}
+
+        ctx = self._RecordingContext()
+        with mock.patch.object(server_module, "_call_creo", fake_call_creo):
+            result = await server_module._run_isolated_operation_with_progress(
+                "import_step", {}, ctx
+            )
+        self.assertEqual(result, {"done": True})
+        self.assertEqual(ctx.reports, [(40.0, "导入中"), (100.0, "完成")])
+
+    async def test_operation_errors_still_propagate(self) -> None:
+        def fake_call_creo(request, *, timeout_seconds, on_progress=None):
+            return {"ok": False, "error": "Creo is busy."}
+
+        ctx = self._RecordingContext()
+        with mock.patch.object(server_module, "_call_creo", fake_call_creo):
+            with self.assertRaises(CreoMcpError):
+                await server_module._run_isolated_operation_with_progress(
+                    "import_step", {}, ctx
+                )
 
 
 if __name__ == "__main__":

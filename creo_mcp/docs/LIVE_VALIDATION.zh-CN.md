@@ -87,6 +87,15 @@
   Repaint/窗口导出路径均不可用或半残。若需要 Blender 级的视口控制，仍需进程内
   Toolkit/J-Link add-in。
 
+## 进度通知验证（2026-10-22 15:5x）
+
+- broker 协议新增可选进度帧（`want_progress` opt-in，向后兼容旧客户端/旧 broker）。
+- 5 个长操作（plan/create/import_step/import_cad/open_native_model）按阶段上报
+  0–100 进度；MCP 工具改为 async + `Context.report_progress` 转发。
+- 真实 MCP 客户端实测：`creo_open_native_model` 收到 4 条
+  `notifications/progress`（15/50/75/100 含中文阶段消息），结果正常返回。
+- 单测 79 个通过（新增 broker 进度帧回路测试与 MCP relay 测试）。
+
 ## 0.10.1 连接加固复测
 
 - 2026-10-09 发现一次 `pfclscom.exe` 静默挂起：Creo `xtop.exe` 仍正常响应，但所有新

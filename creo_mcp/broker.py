@@ -180,8 +180,16 @@ def call(
     *,
     timeout_seconds: float,
     address: str | None = None,
+    on_progress: Any = None,
 ) -> dict[str, Any]:
-    """Send one request to the broker, starting it on demand."""
+    """Send one request to the broker, starting it on demand.
+
+    ``on_progress`` receives each intermediate ``{"kind": "progress", ...}``
+    frame while the operation runs. Progress is opt-in via ``want_progress``,
+    so older brokers and clients keep working unchanged.
+    """
+    if on_progress is not None:
+        request = {**request, "want_progress": True}
     for attempt in (0, 1):
         try:
             conn = _connect(address)
@@ -196,15 +204,26 @@ def call(
 
         try:
             conn.send(_envelope(request))
-            if not conn.poll(timeout_seconds):
-                raise BrokerError(
-                    "The Creo MCP broker did not respond in time. The operation may still "
-                    "be running; inspect Creo before retrying, and use --broker-status to "
-                    "check the broker."
-                )
-            response = conn.recv()
-            if not isinstance(response, dict):
-                raise BrokerError("The Creo MCP broker returned an invalid response.")
+            deadline = time.monotonic() + timeout_seconds
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not conn.poll(remaining):
+                    raise BrokerError(
+                        "The Creo MCP broker did not respond in time. The operation may still "
+                        "be running; inspect Creo before retrying, and use --broker-status to "
+                        "check the broker."
+                    )
+                frame = conn.recv()
+                if not isinstance(frame, dict):
+                    raise BrokerError("The Creo MCP broker returned an invalid response.")
+                if frame.get("kind") == "progress":
+                    try:
+                        on_progress(frame)
+                    except Exception:
+                        pass
+                    continue
+                response = frame
+                break
             if response.get("protocol") != BROKER_PROTOCOL_VERSION:
                 raise BrokerError(
                     "The Creo MCP broker uses an incompatible protocol version; stop it "
@@ -287,7 +306,7 @@ def _serve_connection(conn: Any, requests: queue.Queue, stop_event: threading.Ev
                 stop_event.set()
                 return
             reply: queue.Queue = queue.Queue(maxsize=1)
-            requests.put((request, reply))
+            requests.put((request, reply, conn))
             response = reply.get()
             conn.send(_envelope(response))
     except (OSError, EOFError, ValueError):
@@ -357,9 +376,25 @@ def run_broker(address: str | None = None) -> int:
             accept_thread.start()
             while not stop_event.is_set():
                 try:
-                    request, reply = requests.get(timeout=0.5)
+                    request, reply, client_conn = requests.get(timeout=0.5)
                 except queue.Empty:
                     continue
+                progress_cb = None
+                if request.get("want_progress"):
+                    def progress_cb(value: float, message: str, _conn: Any = client_conn) -> None:
+                        try:
+                            _conn.send(
+                                _envelope(
+                                    {
+                                        "kind": "progress",
+                                        "progress": value,
+                                        "total": 100,
+                                        "message": message,
+                                    }
+                                )
+                            )
+                        except OSError:
+                            pass
                 try:
                     kind = request.get("kind")
                     if kind == "status":
@@ -371,6 +406,7 @@ def run_broker(address: str | None = None) -> int:
                         response = _operation_response(
                             str(request.get("operation", "")),
                             dict(request.get("payload") or {}),
+                            progress_cb=progress_cb,
                         )
                     else:
                         response = {"ok": False, "error": "Unknown broker request."}

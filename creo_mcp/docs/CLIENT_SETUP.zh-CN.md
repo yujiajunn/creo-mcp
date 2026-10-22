@@ -104,6 +104,10 @@ Agent 建模过程中直接看到画面；如需单独截图，调用 `creo_capt
 `PrintWindow` 直接抓取 Creo 窗口——最小化时会先以不抢焦点的方式恢复窗口，截图本身不切
 前台。（真打开会把模型窗口带到前台，这和你手动打开文件的行为一致。）
 
+长操作（方案计算、托盘创建、CAD/STEP 导入、原生模型打开）会发送 MCP
+`notifications/progress` 进度通知（0–100，含阶段说明）；客户端在 `tools/call` 里带上
+`progressToken` 即可收到。
+
 `reopen` 是真正的打开，Creo 会自动把 Navigator 切到「模型树」，无需手动点页签。
 
 注意：`pfcWindow.ExportRasterImage` 在 Creo 13.4 上对隐藏窗口实测会报

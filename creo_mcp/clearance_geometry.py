@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .concept_geometry import _box, _write_colored_concept_step, measure_shape_extent
 from .errors import CreoMcpError
@@ -569,10 +569,25 @@ def _verify_insertion_containment(
     return outside_volume
 
 
+def _progress(
+    cb: Callable[[float, str], None] | None, value: float, message: str
+) -> None:
+    """Report one progress step; observation must never affect the geometry work."""
+    if cb is None:
+        return
+    try:
+        cb(value, message)
+    except Exception:
+        pass
+
+
 def plan_product_clearance_tray(
     request: ProductClearanceTrayPlanRequest,
+    *,
+    progress_cb: Callable[[float, str], None] | None = None,
 ) -> ProductClearanceTrayPlan:
     path, source_sha256, _, solids, api = _load_positioned_product(request)
+    _progress(progress_cb, 10, "产品 STEP 已读取并定位")
     opening_top_z = request.flange_thickness_mm + 0.1
     (
         envelope,
@@ -590,7 +605,9 @@ def plan_product_clearance_tray(
         opening_top_z=opening_top_z,
         api=api,
     )
+    _progress(progress_cb, 45, "组件扫掠型腔包络已生成")
     static_outside = _verify_component_static_containment(solids, component_envelopes, api)
+    _progress(progress_cb, 55, "静态包容校验完成")
     insertion_outside = _verify_insertion_containment(
         component_meshes,
         mesh_bounds,
@@ -602,6 +619,7 @@ def plan_product_clearance_tray(
         api=api,
         strip_widths=strip_widths,
     )
+    _progress(progress_cb, 85, "插入路径包容校验完成")
     envelope_bounds = _bounds(envelope, api)
     outer_length = envelope_bounds[3] - envelope_bounds[0] + 2 * (
         request.wall_thickness_mm + request.flange_width_mm
@@ -631,6 +649,7 @@ def plan_product_clearance_tray(
     plan_id = hashlib.sha256(
         json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:16]
+    _progress(progress_cb, 100, "方案生成完成")
     return ProductClearanceTrayPlan(
         plan_id=plan_id,
         execution_state="dry_run_only",
