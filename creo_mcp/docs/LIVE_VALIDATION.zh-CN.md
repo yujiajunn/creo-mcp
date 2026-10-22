@@ -96,6 +96,17 @@
   `notifications/progress`（15/50/75/100 含中文阶段消息），结果正常返回。
 - 单测 79 个通过（新增 broker 进度帧回路测试与 MCP relay 测试）。
 
+## build_geometry 几何程序验证（2026-10-22 16:2x）
+
+- 新增第 27 个工具 `creo_build_geometry`：受约束 JSON 几何程序（box/cylinder/sphere
+  + union/difference/intersect + mirror + linear_pattern），OCP 构建 → 单一闭合实体
+  校验（节点/深度/尺寸上限）→ STEP 导出 → 与托盘管线同一条受保护导入路径 → 命名
+  特征 GENERATED_SOLID → 保存 + 真打开 + 自动截图。
+- 真实端到端：底板挖两个圆槽程序 8.0 秒完成；Creo 实测包络 120×80×12 与程序一致，
+  体积 98913.98 mm³，进度通知 7 条，自动预览图确认几何正确，状态栏显示已保存。
+- 负例全部被拒并给出可操作原因：负尺寸、多余字段、完全减除、分离双实体、超尺寸、
+  镜像未接合、确认值/零件名不合法。单测 88 个通过。
+
 ## 0.10.1 连接加固复测
 
 - 2026-10-09 发现一次 `pfclscom.exe` 静默挂起：Creo `xtop.exe` 仍正常响应，但所有新

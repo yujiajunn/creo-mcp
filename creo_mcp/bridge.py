@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import tempfile
@@ -13,12 +15,18 @@ from pathlib import Path
 from typing import Any, Iterator, Literal
 
 from .cad import CAD_IMPORT_TYPE, resolve_cad_source
+from .concept_geometry import _write_colored_concept_step
 from .clearance_geometry import (
     CLEARANCE_AUTOMATION_REVISION,
     export_product_clearance_tray_step,
     plan_product_clearance_tray,
 )
 from .errors import CreoMcpError
+from .geometry_dsl import (
+    BuildGeometryRequest,
+    BuildGeometryResult,
+    build_geometry_program,
+)
 from .models import (
     AppliedDimensionUpdate,
     AppliedModelItemRename,
@@ -1465,6 +1473,107 @@ def import_step(
             saved=False,
             activated=request.activate,
         )
+
+
+def build_geometry(
+    request: BuildGeometryRequest,
+    *,
+    progress_cb: Any = None,
+) -> BuildGeometryResult:
+    """Build one JSON-program solid in OpenCascade and import it as a new saved part.
+
+    The program is validated to exactly one closed solid before Creo is touched;
+    the import then follows the same guarded path as the clearance-tray pipeline
+    (fresh name, refused overwrite, named feature, save, real open).
+    """
+    output_directory = Path(request.output_directory).expanduser()
+    if not output_directory.is_absolute():
+        raise CreoMcpError(
+            f"output_directory must be absolute: {request.output_directory}"
+        )
+    output_directory = output_directory.resolve(strict=False)
+    if not output_directory.is_dir():
+        raise CreoMcpError(
+            f"output_directory does not exist or is not a directory: {output_directory}"
+        )
+    _ensure_new_part_name(output_directory, request.part_name)
+
+    program_sha256 = hashlib.sha256(
+        json.dumps(
+            request.program.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    _progress(progress_cb, 10, "正在构建几何程序")
+    outcome = build_geometry_program(request.program)
+
+    result: BuildGeometryResult | None = None
+    with tempfile.TemporaryDirectory(prefix="creo-mcp-build-") as raw_directory:
+        generated_step = Path(raw_directory) / f"{request.part_name}.step"
+        _progress(progress_cb, 45, "正在导出并校验 STEP")
+        _write_colored_concept_step(
+            outcome.shape, generated_step, "generated build_geometry solid"
+        )
+        source = inspect_step_file(InspectStepRequest(step_path=str(generated_step)))
+        if (
+            source.inferred_model_kind != "part"
+            or source.solid_body_count != 1
+            or source.closed_shell_count != 1
+        ):
+            raise CreoMcpError(
+                "Generated geometry did not export as one closed solid part."
+            )
+
+        with _connected_session() as (session, _):
+            _progress(progress_cb, 60, "正在导入 Creo")
+            _ensure_model_not_loaded(session, request.part_name)
+            session.ChangeDirectory(str(output_directory))
+            created, detected_type = _import_new_model(
+                session,
+                generated_step,
+                "generated build_geometry STEP",
+                CREO_STEP_IMPORT_TYPE,
+                request.part_name,
+            )
+            if detected_type != CREO_PART_MODEL_TYPE:
+                raise CreoMcpError("Creo did not import the generated solid as a part.")
+            _progress(progress_cb, 78, "正在命名特征")
+            _rename_generated_import_feature(created, "GENERATED_SOLID")
+            _progress(progress_cb, 88, "正在测量并保存")
+            length_unit = _length_unit_name(created)
+            measured_extent = _extent_to_millimetres(
+                _measure_extent(created), length_unit
+            )
+            created.Save()
+            if request.activate:
+                _progress(progress_cb, 95, "正在打开模型窗口")
+                _activate_and_repaint_model(session, created)
+
+            created_model = _model_info(created)
+            if created_model is None:
+                raise CreoMcpError(
+                    "Creo created the generated solid but returned no model metadata."
+                )
+            result = BuildGeometryResult(
+                created_model=created_model,
+                model_path=str(_saved_model_path(output_directory, request.part_name)),
+                working_directory=str(output_directory),
+                saved=True,
+                activated=request.activate,
+                node_count=outcome.node_count,
+                program_sha256=program_sha256,
+                measured_extent_mm=measured_extent,
+                volume_mm3=outcome.volume_mm3,
+                generated_step_deleted=True,
+                model_state="GENERATED_SOLID",
+            )
+            _progress(progress_cb, 100, "几何构建完成")
+
+    if result is None:  # pragma: no cover - defensive
+        raise CreoMcpError("build_geometry did not produce a result.")
+    return result
 
 
 def _get_loaded_model(

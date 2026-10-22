@@ -21,6 +21,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from . import broker
 
 from .bridge import (
+    build_geometry,
     create_empty_part,
     create_packaging_box,
     create_product_clearance_tray,
@@ -43,6 +44,7 @@ from .bridge import (
 )
 from .errors import CreoMcpError
 from .fit_analysis import inspect_step_solids
+from .geometry_dsl import BuildGeometryRequest, BuildGeometryResult
 from .models import (
     CreatePackagingBoxRequest,
     CreatePackagingBoxResult,
@@ -313,6 +315,10 @@ def _execute_operation(
     if operation == "import_cad":
         return import_cad(
             ImportCadRequest.model_validate(payload), progress_cb=progress_cb
+        )
+    if operation == "build_geometry":
+        return build_geometry(
+            BuildGeometryRequest.model_validate(payload), progress_cb=progress_cb
         )
     if operation == "inspect_model_geometry":
         return inspect_model_geometry(InspectModelGeometryRequest.model_validate(payload))
@@ -1267,6 +1273,35 @@ def create_server() -> FastMCP:
         result = ImportStepResult.model_validate(
             await _run_isolated_operation_with_progress(
                 "import_step", request.model_dump(), ctx
+            )
+        )
+        if request.activate:
+            return await asyncio.to_thread(_with_preview, result)
+        return result
+
+    @server.tool(
+        name="creo_build_geometry",
+        title="Build Solid From Geometry Program",
+        description=(
+            "Build one solid from a constrained JSON geometry program — box/cylinder/sphere "
+            "primitives in millimetres combined with union/difference/intersect, mirror, "
+            "and linear_pattern — validate it as exactly one closed solid (max 2000 mm), "
+            "export STEP, and import it as a new saved Creo part under a name that must "
+            "not exist yet. The imported feature is named GENERATED_SOLID; this produces "
+            "a solid-body concept, not parametric sketch features. Requires "
+            "confirmation='build_geometry'. Emits progress notifications and, when "
+            "activated, returns an automatic Creo window screenshot."
+        ),
+        annotations=WRITE_ANNOTATIONS,
+        structured_output=True,
+    )
+    async def creo_build_geometry(
+        request: BuildGeometryRequest, ctx: Context
+    ) -> BuildGeometryResult:
+        """Build, validate, and import one JSON-program solid as a new Creo part."""
+        result = BuildGeometryResult.model_validate(
+            await _run_isolated_operation_with_progress(
+                "build_geometry", request.model_dump(), ctx
             )
         )
         if request.activate:

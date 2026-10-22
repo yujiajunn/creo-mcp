@@ -33,12 +33,13 @@ class ServerContractTests(unittest.TestCase):
         tools = server._tool_manager.list_tools()
         resources = server._resource_manager.list_resources()
 
-        self.assertEqual(len(tools), 26)
+        self.assertEqual(len(tools), 27)
         self.assertTrue(all(tool.title for tool in tools))
         self.assertTrue(all(tool.description for tool in tools))
         self.assertTrue(all(tool.output_schema for tool in tools if tool.name != "creo_capture_screenshot"))
         tool_names = {tool.name for tool in tools}
         self.assertIn("creo_capture_screenshot", tool_names)
+        self.assertIn("creo_build_geometry", tool_names)
         self.assertIn("creo_plan_product_clearance_tray", tool_names)
         self.assertIn("creo_create_product_clearance_tray", tool_names)
         self.assertNotIn("creo_create_concept_tray", tool_names)

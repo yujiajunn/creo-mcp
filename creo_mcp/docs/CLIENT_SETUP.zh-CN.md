@@ -9,7 +9,11 @@ nanobot、Codex、Claude Desktop、Claude Code、Cursor 和 VS Code 中接入。
 
 - 使用标准 MCP `stdio` 传输，客户端以子进程方式启动服务器，不需要监听端口。
 - 使用官方 MCP Python SDK 的 `FastMCP` 实现初始化、工具和资源协议。
-- 对外提供服务器名称、版本、用途说明、26 个工具以及 5 个中文文档资源。
+- 对外提供服务器名称、版本、用途说明、27 个工具以及 5 个中文文档资源。
+- `creo_build_geometry` 提供受约束的 JSON 几何程序（box/cylinder/sphere 图元 +
+  union/difference/intersect 布尔 + mirror + linear_pattern，毫米单位）：先在
+  OpenCascade 里构建并验证为单一闭合实体（≤2000 mm），再经 STEP 导入为新的已保存
+  Creo 零件（特征名 GENERATED_SOLID）。它是实体概念件，不是参数化草图特征。
 - 工具具有稳定名称、标题、描述、输入/输出 JSON Schema 和行为注解。
 - 只读操作与写操作分离；写操作要求精确确认值，默认不保存且不覆盖现有文件。
 - Creo 侧通过 PTC 官方 VB API / COM 交互，CLI 只是诊断入口，不是另一套业务实现。
