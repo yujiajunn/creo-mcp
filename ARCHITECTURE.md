@@ -1,6 +1,6 @@
 # Creo MCP Architecture
 
-Chinese version: [ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)
+Chinese version: [ARCHITECTURE.zh-CN.md](creo_mcp/docs/ARCHITECTURE.zh-CN.md)
 
 ## Purpose
 

@@ -6,7 +6,6 @@ import json
 import os
 import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from creo_mcp.models import CreoModelInfo, UpdateModelMetadataResult

@@ -7,8 +7,7 @@ import json
 import math
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-from pydantic import model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CreoModelInfo(BaseModel):
@@ -293,6 +292,186 @@ class CreatePackagingBoxResult(BaseModel):
     measured_extent_mm: BoxExtent
 
 
+SignedAxis = Literal["x", "-x", "y", "-y", "z", "-z"]
+
+
+class ProductOrientation(BaseModel):
+    """Right-handed axis mapping from a product STEP into tray coordinates."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tray_x_from: SignedAxis
+    tray_y_from: SignedAxis
+    tray_z_from: SignedAxis
+
+    @model_validator(mode="after")
+    def validate_rigid_orientation(self) -> "ProductOrientation":
+        tokens = (self.tray_x_from, self.tray_y_from, self.tray_z_from)
+        axes = [token.removeprefix("-") for token in tokens]
+        if len(set(axes)) != 3:
+            raise ValueError("Product orientation must map each source axis exactly once.")
+
+        indices = [{"x": 0, "y": 1, "z": 2}[axis] for axis in axes]
+        inversions = sum(
+            indices[left] > indices[right]
+            for left in range(3)
+            for right in range(left + 1, 3)
+        )
+        permutation_sign = -1 if inversions % 2 else 1
+        direction_sign = math.prod(-1 if token.startswith("-") else 1 for token in tokens)
+        if permutation_sign * direction_sign != 1:
+            raise ValueError("Product orientation must be a right-handed rigid rotation.")
+        return self
+
+
+class ProductClearanceTrayPlanRequest(BaseModel):
+    """Read-only inputs for a hard-edge, directionally insertable product cavity."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    product_step_path: str
+    orientation: ProductOrientation
+    insertion_axis: Literal["+z"] = "+z"
+    side_clearance_mm: float = Field(gt=0, le=1000)
+    top_clearance_mm: float = Field(ge=0, le=1000)
+    bottom_clearance_mm: float = Field(ge=0, le=1000)
+    wall_thickness_mm: float = Field(gt=0, le=10000)
+    bottom_thickness_mm: float = Field(gt=0, le=10000)
+    flange_thickness_mm: float = Field(gt=0, le=10000)
+    flange_width_mm: float = Field(gt=0, le=10000)
+    part_name: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
+    output_directory: str
+
+
+class ProductClearanceTrayPlan(BaseModel):
+    """Verified hard-edge safety-envelope concept plan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_id: str
+    execution_state: Literal["dry_run_only"]
+    model_mode: Literal["directional_product_clearance_brep"]
+    concept_stage: Literal["hard_edge_fit"]
+    model_state: Literal["CONCEPT_ONLY"]
+    creo_geometry_kind: Literal["imported_brep"]
+    parameter_update_mode: Literal["regenerate_with_mcp"]
+    product_step_path: str
+    product_sha256: str
+    source_solid_count: int = Field(ge=1)
+    orientation: ProductOrientation
+    insertion_axis: Literal["+z"]
+    side_clearance_mm: float
+    top_clearance_mm: float
+    bottom_clearance_mm: float
+    wall_thickness_mm: float
+    bottom_thickness_mm: float
+    flange_thickness_mm: float
+    flange_width_mm: float
+    static_outside_volume_mm3: float = Field(ge=0)
+    insertion_sweep_outside_volume_mm3: float = Field(ge=0)
+    insertion_path_verified: bool
+    cavity_geometry_mode: Literal["hard_edge_component_rectilinear_directional_sweep"]
+    geometry_source_mode: Literal["conservative_brep_component_rectilinear_depth_envelope"]
+    mesh_linear_deflection_mm: float = Field(gt=0)
+    clearance_conservatism_mm: float = Field(ge=0)
+    depth_layer_height_mm: float = Field(gt=0)
+    depth_layer_count: int = Field(ge=1)
+    vertical_conservatism_mm: float = Field(gt=0)
+    corner_radius_mm: float = Field(ge=0)
+    draft_expansion_mm: float = Field(ge=0)
+    automatic_handling_reliefs: Literal["none"]
+    expected_extent_mm: BoxDimensions
+    part_name: str
+    expected_model_file: str
+    output_directory: str
+    operations: list[str]
+    requires_user_confirmation: bool
+
+
+class CreateProductClearanceTrayRequest(ProductClearanceTrayPlanRequest):
+    """Confirmed creation request for a hard-edge safety-envelope tray."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan_id: str = Field(min_length=16, max_length=16, pattern=r"^[0-9a-f]{16}$")
+    confirmation: Literal["create_product_clearance_concept"]
+    activate: bool = True
+
+
+class CreateProductClearanceTrayResult(BaseModel):
+    """Saved Creo result for a hard-edge product-clearance concept tray."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    created_model: CreoModelInfo
+    model_path: str
+    working_directory: str
+    saved: Literal[True]
+    activated: bool
+    model_state: Literal["CONCEPT_ONLY"]
+    creo_geometry_kind: Literal["imported_brep"]
+    parameter_update_mode: Literal["regenerate_with_mcp"]
+    generated_step_deleted: Literal[True]
+    source_product_path: str
+    source_product_sha256: str
+    applied_plan: ProductClearanceTrayPlan
+    measured_extent_mm: BoxExtent
+
+
+class StepPoint3D(BaseModel):
+    """One point in a STEP file's declared millimetre coordinates."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x_mm: float
+    y_mm: float
+    z_mm: float
+
+
+class StepSolidBounds(BaseModel):
+    """Axis-aligned bounds for one STEP solid."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    minimum: StepPoint3D
+    maximum: StepPoint3D
+
+
+class StepSolidGeometry(BaseModel):
+    """Measured geometry for one solid body in STEP transfer order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    solid_index: int = Field(ge=1)
+    bounds_mm: StepSolidBounds
+    extent_mm: BoxExtent
+    center_of_mass_mm: StepPoint3D
+    volume_mm3: float = Field(gt=0)
+
+
+class StepSolidRelationship(BaseModel):
+    """Minimum separation between two STEP solids in their source placement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    first_solid_index: int = Field(ge=1)
+    second_solid_index: int = Field(ge=1)
+    minimum_distance_mm: float = Field(ge=0)
+    intersects_or_touches: bool
+
+
+class InspectStepSolidsResult(BaseModel):
+    """Read-only per-solid measurements for a millimetre STEP file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    step_path: str
+    declared_length_unit: Literal["mm"]
+    solid_count: int = Field(ge=1)
+    solids: list[StepSolidGeometry] = Field(min_length=1)
+    relationships: list[StepSolidRelationship]
+
+
 class InspectStepRequest(BaseModel):
     """Request to inspect a local STEP file without starting Creo."""
 
@@ -495,8 +674,11 @@ class InspectModelGeometryRequest(BaseModel):
         default=None,
         min_length=1,
         max_length=31,
-        pattern=r"^[A-Za-z][A-Za-z0-9_]*$",
-        description="Loaded Creo model name without extension, or null for the active model.",
+        pattern=r"^[A-Za-z0-9_]+$",
+        description=(
+            "Loaded Creo model name without extension, or null for the active model. "
+            "Existing imported component names may begin with a digit."
+        ),
     )
     model_kind: Literal["part", "assembly"] | None = Field(
         default=None,

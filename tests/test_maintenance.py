@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
+
+os.environ.setdefault("CREO_MCP_DISPLAY_MODE", "display")
 
 from creo_mcp.bridge import (
     export_model,
@@ -143,6 +146,11 @@ class _FakeModel:
     def GetParam(self, name: str) -> _FakeParameter | None:
         return self.parameters.get(name.upper())
 
+    def Display(self) -> None:
+        if self.session is not None:
+            self.session.CurrentModel = self
+            self.session.window.activated = True
+
     def CreateParam(self, name: str, value: _FakeParamValue) -> None:
         self.created_parameters.append((name, value))
         self.parameters[name.upper()] = _FakeParameter(name, value)
@@ -159,6 +167,7 @@ class _FakeModel:
     def CopyAndRetrieve(self, name: str, _instructions: object) -> "_FakeModel":
         assert self.session is not None
         copied = _FakeModel(self.unit)
+        copied.session = self.session
         copied.FileName = f"{name}.prt"
         copied.InstanceName = name.upper()
         (Path(self.session.directory) / f"{name}.prt.1").write_bytes(b"native")
@@ -172,9 +181,13 @@ class _FakeModel:
 class _FakeWindow:
     def __init__(self) -> None:
         self.activated = False
+        self.repaint_count = 0
 
     def Activate(self) -> None:
         self.activated = True
+
+    def Repaint(self) -> None:
+        self.repaint_count += 1
 
 
 class _FakeSession:
@@ -183,6 +196,7 @@ class _FakeSession:
         self.directory = directory
         self.directory_changes: list[str] = []
         self.window = _FakeWindow()
+        self.CurrentWindow = self.window
         model.session = self
 
     def GetCurrentDirectory(self) -> str:
@@ -249,6 +263,7 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(model.parameters["MCP_AUTOMATION_ID"].Value.StringValue, "job-1")
         self.assertEqual(model.created_parameters[0][0], "MCP_AUTOMATION_REVISION")
         self.assertEqual(model.regenerate_count, 1)
+        self.assertEqual(session.window.repaint_count, 1)
         self.assertFalse(result.saved)
 
     def test_name_conflict_rejects_every_change_before_mutation(self) -> None:
@@ -370,6 +385,7 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(session.directory_changes, [raw_target, raw_source])
         self.assertTrue(result.saved_path.endswith("copy.prt.1"))
         self.assertTrue(session.window.activated)
+        self.assertEqual(session.window.repaint_count, 1)
 
     def test_export_rejects_wrong_extension_and_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:

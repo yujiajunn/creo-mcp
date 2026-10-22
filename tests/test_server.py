@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import tomllib
 import unittest
 from pathlib import Path
@@ -29,10 +30,16 @@ class ServerContractTests(unittest.TestCase):
         tools = server._tool_manager.list_tools()
         resources = server._resource_manager.list_resources()
 
-        self.assertEqual(len(tools), 22)
+        self.assertEqual(len(tools), 26)
         self.assertTrue(all(tool.title for tool in tools))
         self.assertTrue(all(tool.description for tool in tools))
-        self.assertTrue(all(tool.output_schema for tool in tools))
+        self.assertTrue(all(tool.output_schema for tool in tools if tool.name != "creo_capture_screenshot"))
+        tool_names = {tool.name for tool in tools}
+        self.assertIn("creo_capture_screenshot", tool_names)
+        self.assertIn("creo_plan_product_clearance_tray", tool_names)
+        self.assertIn("creo_create_product_clearance_tray", tool_names)
+        self.assertNotIn("creo_create_concept_tray", tool_names)
+        self.assertNotIn("creo_create_product_silhouette_tray", tool_names)
         self.assertEqual(
             {str(resource.uri) for resource in resources},
             {
@@ -43,6 +50,23 @@ class ServerContractTests(unittest.TestCase):
                 "creo://docs/udf-manifest",
             },
         )
+
+    def test_documentation_resources_read_from_package(self) -> None:
+        server = create_server()
+
+        async def read_docs() -> dict[str, str]:
+            docs: dict[str, str] = {}
+            for resource in server._resource_manager.list_resources():
+                loaded = await server._resource_manager.get_resource(resource.uri)
+                self.assertIsNotNone(loaded)
+                content = await loaded.read()
+                docs[str(resource.uri)] = content if isinstance(content, str) else ""
+            return docs
+
+        docs = asyncio.run(read_docs())
+
+        self.assertEqual(len(docs), 5)
+        self.assertTrue(all(text.strip() for text in docs.values()))
 
 
 if __name__ == "__main__":

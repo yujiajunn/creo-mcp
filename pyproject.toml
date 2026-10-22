@@ -1,12 +1,18 @@
 [project]
 name = "creo-mcp"
-version = "0.10.0"
+version = "0.12.0"
 description = "A standard MCP bridge for PTC Creo through its official VB API"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "mcp>=1.30,<2",
   "pywin32>=308; sys_platform == 'win32'",
+  "pillow>=11,<13",
+]
+
+[project.optional-dependencies]
+concept-geometry = [
+  "cadquery-ocp-novtk>=7.9.3.1,<7.9.4",
 ]
 
 [build-system]
@@ -15,6 +21,9 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 creo-mcp = "creo_mcp.server:main"
+
+[tool.setuptools.package-data]
+creo_mcp = ["docs/*.md"]
 
 [tool.ruff]
 line-length = 100

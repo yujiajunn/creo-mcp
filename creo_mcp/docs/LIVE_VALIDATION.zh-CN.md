@@ -8,10 +8,106 @@
 - 日期：2026-10-08 至 2026-10-09
 - Creo：13.4.1.0
 - 当时验证的 MCP：`0.9.0`
-- 当前验证版本：`0.10.0`
+- 当前代码版本：`0.12.0`
 - Windows 用户与 Creo 启动用户相同
 - 测试模型：由 `吸塑盒.stp` 导入的未保存零件 `吸塑盒.prt`、由 `针管.stp`
   导入的毫米制装配 `针管.asm`
+
+## 0.11.0 概念托盘离线验证
+
+- 新增单槽、多槽和组装件粗随形概念规划/创建、逐实体 STEP 测量、包装参考分析及型腔放入检查，工具总数为 31。
+- 包装参考分析已对 `吸塑盒.stp` 完成离线验证：只测量单个包装实体，排除 STEP 中辅助几何；
+  单位为毫米，实体包络约 `120.983 × 23.213 × 62.983 mm`，成型深度轴为 Y，推断开口
+  法向为 `+Y`、开口平面为 `Y=0`，实体体积约 `4937.314 mm³`。该结果用于继承包装约定，
+  不得把参考盒尺寸直接复制到新产品包装。
+- OpenCascade 后端已离线生成 AP242 STEP，并验证为一个 solid body、一个 closed shell、
+  超过 20 个高级曲面；示例包络为 `103 × 64 × 25 mm`，不是实心方块。STEP 已验证携带
+  精确 RGB `66, 223, 208`（`#42DFD0`）表面色。
+- 创建路径会检查目标名不冲突、导入为单一 Creo BREP 特征、写入完整配方参数、重生成、
+  校验包络、保存到新名称，并激活已有或新建模型窗口后执行 `Repaint`。
+- 结果固定标记为 `CONCEPT_ONLY`、`imported_brep` 和 `REGENERATE_WITH_MCP`。配方参数不
+  直接驱动导入体，不得把它称为原生参数化工程模型。创建路径同时写入
+  `MCP_DISPLAY_COLOR_HEX`、`MCP_DISPLAY_FINISH=MATTE_NON_METALLIC` 和
+  `MCP_DISPLAY_ROLE=VISUALIZATION_ONLY_NOT_MATERIAL`；这些值不构成材料或表面工艺验证。
+- 放入检查的合成 STEP 回归覆盖通过、深度越界和 24 个正交方向搜索。对
+  `针管.stp` 使用示例托盘参数、`1.0 mm` 侧向余量和 `0.5 mm` 顶部余量检查，识别到
+  2 个实体、24 个方向均不可行，并返回包装状态核对警告。
+- 分槽方案的离线回归覆盖两个独立型腔、桥宽和边界验证、单一闭合实体导出、逐实体放入
+  检查、Creo 配方参数和导入显示流程。真实 Creo 中的多槽导入仍需用户确认后串行验证。
+- 组装件粗随形 R02 已在真实 Creo 13.4.1.0 中验证：源 `针管.stp` 的两个实体接触，按最低
+  深度方向生成单个连通阶梯槽，完整实体包含检查零越界；导入后 `2/2` 特征 active，无失败、
+  抑制或匿名特征，外形约 `100.9 × 79.9 × 51.9 mm`，结果保持 `CONCEPT_ONLY`。
+- 当前只完成离线几何和 Mock 回归验证。真实 Creo 中的导入、保存、即时显示、模型结构
+  和交接报告仍需在 MCP/gateway 重新加载 0.11.0 后串行验证。
+
+## 0.12.0 成型过渡修正
+
+- R03 在真实 Creo 中通过完整产品包含、保存和特征状态检查，但用户顶视、斜视和侧视复核
+  发现其包围盒式十字轮廓、直壁和硬深度台阶与参考吸塑盒的成型语言不符，因此 R03 只保留
+  为被拒绝的问题对照，不能作为视觉验收通过结果。
+- 组装件粗随形生成器已改为底部功能轮廓到扩大开口轮廓的放样体，各区域形成概念斜肩，并
+  对槽底到侧壁的边增加受底部间隙限制的圆滑过渡；深浅区通过相交放样凸瓣形成连续网络。
+- 对 `针管.stp` 的离线 R04 方案验证为完整产品零越界、最大开口外扩 `4.0 mm`、槽底过渡
+  半径 `0.75 mm`，导出为一个 solid body 和一个 closed shell，包络约
+  `108.154 × 90.100 × 52.386 mm`。
+- 84 项完整回归测试通过。R04 尚未通过真实 Creo 导入与三视图人工验收；MCP/gateway 必须
+  重新加载 0.12.0 后才能创建新修订。
+
+## 0.12.0 单例 broker 并发验证（2026-10-22）
+
+- 新增按用户隔离的本地 broker（命名管道），独占 VB API 连接；多个 MCP 客户端共享。
+- 停用旧的进程内持久 worker 后，broker 在 3.3 秒内连接 Creo 13.4.1.0，活动模型为
+  `zhenguan_05ml_tray_c.prt`。
+- 同时启动 3 个独立 `--probe-status` 客户端，全部返回 `connected=true`，无 busy 错误。
+- 通过真实 MCP stdio 客户端调用 `creo_get_status` 和 `creo_get_model_geometry` 成功；
+  活动模型包络约 `95.7 × 59.2 × 22.9 mm`。
+- 仍待验证：nanobot 重启后加载新代码的完整对话链路；创建后图形区即时可见性。
+
+## 0.12.0 窗口显示与预览验证（2026-10-22）
+
+- 新增单例 broker 后，多客户端并发探针通过；旧 worker 的独占锁问题解决。
+- `pfcModel.Display()` + 重绘在 Creo 13.4 上会触发 `dbg_err_crash() ... ORDER_DEBUG`，
+  随后出现访问冲突并退出；`CreateModelWindow` 同样不稳定。
+- `session.OpenFile(model.Descr)` 能返回窗口对象，但活动模型仍可能为 `null`，无法可靠
+  自动显示；叠加 `window.Activate()` 后仍需继续观察。
+- `window.ExportRasterImage` 对 OpenFile 返回的窗口返回 `XToolkitGeneralError`；继续重绘/
+  导出会使 Creo 无响应，必须强制重启。当前不采用该离屏预览路径。
+- 新增 `creo_capture_screenshot`：通过 `PrintWindow` 直接捕获 Creo 窗口，不切换前台，
+  以 MCP image content 返回（PNG，约 55–140 KB），前台窗口保持不变。
+- `display_only` 模式（只调用 `pfcModel.Display()`，不重绘、不激活）在真实 Creo 中
+  能显示 `ZHENGGUAN_TRAY_R06` 且窗口稳定不崩溃，但后续实测证实它是**“半打开”**状态：
+  会话 `active_model` 为 null、图形区点击无反应（只有中键旋转可用）、出现卡住的选中
+  高亮、Navigator 不切到模型树。仅适合未保存模型的查看兜底。
+- 修复：`reopen` 模式（默认）。对已保存模型先 `model.Erase()` 再 `session.OpenFile(descr)`，
+  等同手动“文件→打开”。实测 `active_model` 正确等于 R06、模型树自动显示、图形区交互
+  恢复、无 traceback；`open_native_model` 自动附带截图经 MCP 客户端确认画面正常。
+- nanobot 一次性 Agent 实测（15:26）：`creo_open_native_model` 返回结果自带截图，
+  Agent 未单独调截图工具即确认“左侧模型树完整、无卡住高亮、画面正常”。
+- 结论：Creo 13.4 上让模型可交互只能走真打开（Erase+OpenFile）；`Display()` 与任何
+  Repaint/窗口导出路径均不可用或半残。若需要 Blender 级的视口控制，仍需进程内
+  Toolkit/J-Link add-in。
+
+## 0.10.1 连接加固复测
+
+- 2026-10-09 发现一次 `pfclscom.exe` 静默挂起：Creo `xtop.exe` 仍正常响应，但所有新
+  `Connect` 调用无输出且不退出。这与快速报错的 `gen_py` 缓存故障不同。
+- 进一步复现确认，问题与 nanobot 的 `cwd`、精简环境、`CREATE_NO_WINDOW` 和 Windows
+  Job Object 无关；相同条件的独立探针可以成功，反复 `Connect`/`Disconnect` 后手工和
+  nanobot 调用都会进入同一 COM 激活挂起状态。
+- MCP 在线调用已改为单一持久 worker：第一次调用建立一次 VB API 连接，后续调用复用
+  同一个 Session；超时仍不调用 `kill/terminate`，并熔断后续请求。
+- Mock 回归测试覆盖原生超时参数、持久 Session 复用、请求复用同一 worker、互斥忙碌
+  返回、并发拒绝、worker 退出后自动解除熔断、连接失败清理和超时只关闭输入；完整套件
+  共 65 项并全部通过。
+- 已为新建、打开、导入、另存激活、UDF 放置和活动模型元数据更新增加显式窗口
+  `Repaint`。Mock 回归测试确认激活和重生成后会请求重绘；仍需在真实 Creo 会话中确认
+  几何和模型树无需关闭重开即可立即可见。
+- 清理僵死探针后，在同一活动 Creo 会话中连续执行两次 `--probe-status`：第一次约
+  13.43 秒、紧接着第二次约 4.32 秒，均返回 `connected=true` 和活动模型
+  `SYRINGE_MCP_VALIDATION`，没有再次发生 COM 激活挂起。
+- 两次探针均为只读，没有修改或保存模型。
+- 旧短连接实现通过 nanobot 连续复现两次启动超时；持久 worker 实现尚需在重启 Creo、
+  清除旧 COM 状态后进行真实对话验证。在该项完成前，不把 nanobot 集成链路标记为通过。
 
 ## 已通过
 

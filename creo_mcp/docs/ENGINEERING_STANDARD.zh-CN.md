@@ -70,10 +70,10 @@
 ### 当前服务身份
 
 - 名称：`Creo MCP`
-- 版本：`0.10.0`
+- 版本：`0.12.0`
 - 传输：MCP 标准 `stdio`
 - 后端：PTC 官方 VB API / COM
-- 工具：22 个，其中 12 个只读/规划工具，10 个会改变 Creo 会话、模型或文件状态的工具
+- 工具：31 个，其中 18 个只读/规划工具，13 个会改变 Creo 会话、模型或文件状态的工具
 - MCP Resources：5 个中文文档资源
 
 工具的名称、标题、描述、输入/输出 Schema 和只读/写入注解由标准 `tools/list` 返回。
@@ -107,6 +107,8 @@
 - CLI 只用于本机安装诊断、真实会话验证和故障复现。
 - MCP 为避免 COM 阻塞传输进程，会用隔离子进程调用同一个 CLI operation 入口；这属于
   进程隔离实现，不代表存在第二套业务 API。
+- MCP 进程内和 Windows 本机会同时限制为一个 Creo 操作；并行请求会明确返回 busy，
+  不会同时创建多个 VB API 连接。
 
 ## 日志与可观测性
 
@@ -139,7 +141,14 @@
 - 原生模型打开、外部 CAD 导入、结构和几何检查。
 - 稳定引用发现、UDF 严格清单、候选资格运行和正式放置隔离。
 - 单位换算、重生成检查、默认不保存和防覆盖原则。
+- 新建、打开、导入、另存激活以及活动模型写入后执行窗口 `Repaint`，避免模型已更新但
+  Creo 视图区仍显示旧缓存；重绘失败会明确提示内存修改可能已经存在。
 - 通用语义重命名、命名尺寸更新、强类型模型参数维护和工程交付报告。
+- 通用概念托盘的离线 BREP 生成、显式参数规划、单一闭合实体校验和受保护导入；结果
+  必须标记为 `CONCEPT_ONLY` / `imported_brep` / `REGENERATE_WITH_MCP`。
+- 概念 AP242 携带 `#42DFD0` 青绿色表面显示色，导入模型记录
+  `MCP_DISPLAY_COLOR_HEX`、`MCP_DISPLAY_FINISH=MATTE_NON_METALLIC` 和
+  `MCP_DISPLAY_ROLE=VISUALIZATION_ONLY_NOT_MATERIAL`，避免把外观与工程材料混为一谈。
 - 受保护的原生另存副本，以及 STEP、IGES、Parasolid 中性格式导出。
 - 最小化 JSONL 操作日志与最近记录查询。
 - 服务器身份、完整工具 Schema、中文文档资源和真实会话证据。
@@ -176,6 +185,50 @@ Creo VB API 写操作不是数据库事务。遇到超时、COM 异常、重生�
 
 日志写入失败不影响 Creo 操作，因此“没有日志”不能作为“没有发生修改”的证据。出现
 连接超时时，也应先在 Creo 界面确认当前模型状态，再决定是否重试。
+
+### 直角随形托盘 BREP 的维护边界
+
+`creo_plan_product_clearance_tray` 与 `creo_create_product_clearance_tray`
+从预期包装状态的完整 STEP 生成直角随形概念托盘。几何由 OpenCascade 离线生成 AP242
+STEP，再作为单一导入特征进入 Creo。模型参数记录生成配方，但不会直接驱动导入体；尺寸
+变化必须以新修订重新生成，人工在导入体之后增加的 Creo 特征也不会自动迁移。
+
+创建前必须读取完整产品 STEP。文件级包围盒只能用于初筛；多实体装配必须核对组件相对
+位置，不能把爆炸或替代状态误当成包装状态。计划会验证组件完整容纳和沿 `+Z` 的直线装入。
+大装配可使用独立的直角全深度槽位，空白区域保持平面，不得退化为总包络大坑。
+
+该结果是 `CONCEPT_ONLY`，不包含圆角、倒角、拔模、材料减薄、保持结构或制造验证。达到
+工程可评审阶段仍应迁移到合格原生模板/UDF 或由工程师重建为原生特征。
+
+### Windows COM 静默挂起恢复
+
+如果 `--probe-status` 没有任何标准输出或错误，并且 `pfclscom.exe` 长时间无进展、下面
+仍挂着 `pro_comm_msg.exe`，这是 VB API 通信进程静默挂起，不是下面所述的 `gen_py`
+缓存错误。0.10.1 起采用以下保护：
+
+- `Connect` 使用 PTC 原生 15 秒超时，`Disconnect` 最多等待 5 秒。
+- 所有 MCP、CLI 和其他使用本模块的 Python 进程通过 Windows 命名互斥量串行连接。
+- MCP 服务为所有在线 Creo 工具维护一个串行持久 worker：第一次调用建立一次 VB API
+  连接，后续调用复用同一 Session，直到 MCP 传输退出。这样避免反复启动和销毁
+  `pfclscom.exe`。
+- 独立 CLI 探针仍是单次连接；断开后继续持有跨进程互斥量 3 秒，让 `pfclscom.exe`
+  完成 COM 清理。
+- 持久 worker 超时后，MCP 父进程关闭其输入但不会强杀正在 COM 调用中的进程；worker
+  在调用返回后自行断开退出，期间熔断后续调用，退出后熔断自动解除。
+- 超时写操作的结果属于未知状态。必须检查 Creo 界面和操作日志，禁止自动重试。
+- Agent 收到 busy 或超时后必须直接报告恢复说明，不得自行调用 Shell 等待、检查或结束
+  MCP/Creo 进程。
+
+恢复时先停止新的 Creo MCP 请求。如果错误给出了仍在运行的 worker PID，等待它正常
+结束；长时间没有退出时，由操作者结束僵死的 `pfclscom.exe` 及其子
+`pro_comm_msg.exe`，但不要结束正常的 Creo `xtop.exe`。随后只运行一次：
+
+```powershell
+.\.venv\Scripts\python.exe .\creo_mcp_server.py --probe-status
+```
+
+若仍不能在原生连接超时内返回，再关闭并重启 Creo，然后重新探测。恢复期间不得并发
+启动多个探针，也不得因没有收到 MCP 结果就直接重复写操作。
 
 ### Windows COM 缓存恢复
 

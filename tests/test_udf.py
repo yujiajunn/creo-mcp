@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+os.environ.setdefault("CREO_MCP_DISPLAY_MODE", "display")
 
 from creo_mcp.bridge import place_udf, run_udf_qualification
 from creo_mcp.errors import CreoMcpError
@@ -109,9 +112,18 @@ class _FakeModel:
         return SimpleNamespace(Volume=6.0)
 
 
+class _FakeWindow:
+    def __init__(self) -> None:
+        self.repaint_count = 0
+
+    def Repaint(self) -> None:
+        self.repaint_count += 1
+
+
 class _FakeSession:
     def __init__(self) -> None:
         self.CurrentModel = _FakeModel()
+        self.CurrentWindow = _FakeWindow()
         self.directory = r"D:\CreoWork"
         self.directory_changes: list[str] = []
 
@@ -278,6 +290,7 @@ class UdfPlacementTests(unittest.TestCase):
             result = place_udf(self._request())
 
         self.assertTrue(session.CurrentModel.regenerated)
+        self.assertEqual(session.CurrentWindow.repaint_count, 1)
         variant = session.CurrentModel.instructions.VariantValues.Item(0)
         self.assertEqual(variant.DimensionValue, 2.54)
         self.assertEqual(result.group_members[0].item_id, 101)
@@ -302,6 +315,7 @@ class UdfPlacementTests(unittest.TestCase):
             result = run_udf_qualification(self._qualification_request())
 
         self.assertTrue(session.CurrentModel.regenerated)
+        self.assertEqual(session.CurrentWindow.repaint_count, 1)
         self.assertEqual(result.qualification_state, "candidate_run_completed")
         self.assertFalse(result.manifest_verified_non_interactive)
         self.assertFalse(result.saved)

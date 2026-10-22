@@ -11,17 +11,17 @@ It works with any compatible local MCP client, including nanobot, Codex,
 Claude Desktop, and Cursor.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) or the
-[Chinese architecture guide](ARCHITECTURE.zh-CN.md) for the boundary between
+[Chinese architecture guide](creo_mcp/docs/ARCHITECTURE.zh-CN.md) for the boundary between
 reusable Creo capabilities, product skills, project data, safety invariants,
 and the planned generic feature set. See the
-[Chinese engineering delivery standard](ENGINEERING_STANDARD.zh-CN.md) for
+[Chinese engineering delivery standard](creo_mcp/docs/ENGINEERING_STANDARD.zh-CN.md) for
 human handoff, naming, editability, observability, and acceptance rules. See
-[UDF_MANIFEST.zh-CN.md](UDF_MANIFEST.zh-CN.md) for the qualified UDF manifest
+[UDF_MANIFEST.zh-CN.md](creo_mcp/docs/UDF_MANIFEST.zh-CN.md) for the qualified UDF manifest
 format and live qualification workflow. Real-session evidence and the remaining
 qualification gaps are tracked in
-[LIVE_VALIDATION.zh-CN.md](LIVE_VALIDATION.zh-CN.md). Client setup, protocol
+[LIVE_VALIDATION.zh-CN.md](creo_mcp/docs/LIVE_VALIDATION.zh-CN.md). Client setup, protocol
 compatibility, distribution options, and the prioritized improvement backlog are
-documented in [CLIENT_SETUP.zh-CN.md](CLIENT_SETUP.zh-CN.md).
+documented in [CLIENT_SETUP.zh-CN.md](creo_mcp/docs/CLIENT_SETUP.zh-CN.md).
 
 It currently exposes these tools:
 
@@ -56,6 +56,11 @@ It currently exposes these tools:
   leaves it unsaved. Interactive repair is disabled.
 - `creo_plan_packaging_box` — validates a coarse box request and returns a
   deterministic dry-run plan. It does not connect to Creo or create a file.
+- `creo_plan_product_clearance_tray` — reads the complete millimetre STEP or
+  assembly, derives a conservative hard-edge cavity from its full BREP, and
+  verifies static containment plus straight `+Z` insertion before creation.
+- `creo_inspect_step_solids` — reports the extent and volume of each STEP solid
+  in transfer order for an explicitly chosen separate-cavity layout.
 - `creo_inspect_part_dimensions` — retrieves a native `.prt` file and reports
   its principal length unit and driving dimension symbols without saving it.
 - `creo_inspect_step_file` — validates a local STEP file and reports its AP
@@ -84,6 +89,9 @@ It currently exposes these tools:
   new name, applies confirmed dimensions, regenerates, verifies the resulting
   envelope, and saves the new model. It refuses to overwrite any existing Creo
   version of the requested part name.
+- `creo_create_product_clearance_tray` — creates the verified hard-edge tray
+  as a new `CONCEPT_ONLY` imported BREP, records its geometry and validation
+  metadata, saves it under a new name, and activates it in Creo.
 
 The tools use explicit JSON schemas, structured output, standard MCP tool
 annotations, isolated COM calls, and timeouts. Write operations are separate
@@ -112,6 +120,25 @@ solids.
 `creo_plan_packaging_box` and `confirmation: "create_new_model"`. The plan ID
 changes whenever the name, dimensions, wall thickness, or output directory
 changes, so a stale approval cannot be reused for different geometry.
+
+`creo_create_product_clearance_tray` is deliberately limited to concept work.
+It derives its cavities from the supplied product STEP, and a dimensional change
+must be planned and regenerated through MCP under a new revision. The result is
+marked `CONCEPT_ONLY`, `imported_brep`, and `REGENERATE_WITH_MCP`; it is not a
+native engineering or production-ready packaging model.
+
+Generated concept STEP files carry a turquoise AP242 surface color (`#42DFD0`)
+and the imported Creo model records `MCP_DISPLAY_COLOR_HEX`,
+`MCP_DISPLAY_FINISH=MATTE_NON_METALLIC`, and
+`MCP_DISPLAY_ROLE=VISUALIZATION_ONLY_NOT_MATERIAL`. The color is a visualization
+aid only. It does not assign an engineering material or prove transparency,
+roughness, gloss, or a manufacturing finish; those properties require separate
+Creo and manufacturing validation.
+
+Before creating a tray, use `creo_plan_product_clearance_tray` with the product
+STEP in its intended packaged state. A file-level bounding box is only an early
+screening measurement; the hard-edge plan verifies complete containment and a
+straight insertion path, but not retention, forming, or manufacturing.
 
 ## Native packaging-box template
 
@@ -151,8 +178,13 @@ application repository's environment:
 cd <repo>
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m pip install -e ".[concept-geometry]"
 .\.venv\Scripts\creo-mcp.exe --probe-status
 ```
+
+The core install is enough for inspection, import, metadata, UDF, save, and
+export tools. Install the `concept-geometry` extra on machines that generate
+hard-edge product-clearance trays.
 
 The editable install provides the `creo-mcp.exe` entry point while keeping the
 server source and documentation in this repository. Client configurations may
@@ -195,6 +227,8 @@ automatically after the following connection is added to its config:
           "creo_run_udf_qualification",
           "creo_place_qualified_udf",
           "creo_plan_packaging_box",
+          "creo_plan_product_clearance_tray",
+          "creo_inspect_step_solids",
           "creo_inspect_part_dimensions",
           "creo_inspect_step_file",
           "creo_create_empty_part",
@@ -204,7 +238,8 @@ automatically after the following connection is added to its config:
           "creo_open_native_model",
           "creo_import_cad",
           "creo_import_step",
-          "creo_create_packaging_box"
+          "creo_create_packaging_box",
+          "creo_create_product_clearance_tray"
         ]
       }
     }

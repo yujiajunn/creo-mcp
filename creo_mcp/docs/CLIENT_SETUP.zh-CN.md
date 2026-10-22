@@ -9,7 +9,7 @@ nanobot、Codex、Claude Desktop、Claude Code、Cursor 和 VS Code 中接入。
 
 - 使用标准 MCP `stdio` 传输，客户端以子进程方式启动服务器，不需要监听端口。
 - 使用官方 MCP Python SDK 的 `FastMCP` 实现初始化、工具和资源协议。
-- 对外提供服务器名称、版本、用途说明、22 个工具以及 5 个中文文档资源。
+- 对外提供服务器名称、版本、用途说明、26 个工具以及 5 个中文文档资源。
 - 工具具有稳定名称、标题、描述、输入/输出 JSON Schema 和行为注解。
 - 只读操作与写操作分离；写操作要求精确确认值，默认不保存且不覆盖现有文件。
 - Creo 侧通过 PTC 官方 VB API / COM 交互，CLI 只是诊断入口，不是另一套业务实现。
@@ -44,6 +44,13 @@ cd <repo>
 成功时返回 `"ok": true`。MCP 正常启动后会保持安静，这是 `stdio` 服务器的正常行为；
 标准输出是 JSON-RPC 协议通道，普通日志不能写入标准输出。
 
+只使用检查、导入、UDF 和交付能力时安装核心包即可；需要生成概念托盘时安装可选几何
+后端：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[concept-geometry]"
+```
+
 下文所有配置都使用同一个启动定义：
 
 ```text
@@ -53,6 +60,54 @@ cwd = <repo>
 ```
 
 其他电脑安装时，把这三个绝对路径替换为那台电脑上的实际路径。
+
+## 单实例 broker
+
+从 0.12.0 起，MCP 服务器默认不再各自连接 Creo，而是共享一个按 Windows 用户隔离的本地
+broker 进程（命名管道 `\\.\pipe\creo-mcp-broker-<用户>`）。broker 独占唯一的 VB API
+连接并串行执行所有操作，因此：
+
+- nanobot、Codex、Claude Desktop、Cursor 等客户端可以同时运行；它们通过 broker 排队，
+  不再出现 `Creo is busy with another MCP or VB API operation`。
+- 重启 MCP 客户端或 nanobot 不会关闭 broker，Creo 连接保持可用。
+- 同一时间仍然只有一个 Creo 操作在执行；写操作排队而不是并发执行。
+- broker 在第一次需要时自动启动，也可以手动运行 `--broker`。
+
+诊断命令：
+
+```powershell
+.\.venv\Scripts\python.exe .\creo_mcp_server.py --broker-status
+.\.venv\Scripts\python.exe .\creo_mcp_server.py --broker-stop
+.\.venv\Scripts\python.exe .\creo_mcp_server.py --probe-status
+```
+
+broker 日志位于 `%LOCALAPPDATA%\CreoMCP\logs\broker.log`。更新 creo-mcp 代码后先执行
+`--broker-stop`，下一次调用会自动用新代码启动 broker。需要回到旧的进程内持久 worker
+时，设置环境变量 `CREO_MCP_TRANSPORT=worker`。
+
+### 自动显示模式
+
+Creo 13.4 对后台 API 主动创建/激活模型窗口比较敏感，实测会触发
+`dbg_err_crash() ... ORDER_DEBUG` 并最终访问冲突。用环境变量
+`CREO_MCP_DISPLAY_MODE` 控制：
+
+| 值 | 行为 | 建议 |
+| --- | --- | --- |
+| `reopen` | 已保存模型先 `Erase` 掉会话内副本，再 `session.OpenFile` 真打开（默认） | 推荐；等同手动“文件→打开”：会话真正激活模型、Navigator 自动切到模型树、点选/右键交互全部正常。未保存的模型（导入、空零件）自动退回 `display_only` |
+| `display_only` | 只调用 `pfcModel.Display()` | 半打开状态：`active_model` 为空、点模型无反应（只有旋转可用）、左侧可能停在文件夹浏览器。仅作未保存模型的查看兜底 |
+| `none` | 只创建/保存，不碰 Creo 窗口 | 兜底；手动打开保存的文件 |
+| `openfile` | 不 Erase 直接 `OpenFile` | 模型已在会话中时是空操作，基本无效 |
+| `display` | `Display()` + 重绘当前窗口 | 已知会触发图形错误，不建议 |
+
+`reopen` 模式下，创建/导入/打开工具会自动附带一张 Creo 窗口截图（MCP image content），
+Agent 建模过程中直接看到画面；如需单独截图，调用 `creo_capture_screenshot`。截图通过
+`PrintWindow` 直接抓取 Creo 窗口——最小化时会先以不抢焦点的方式恢复窗口，截图本身不切
+前台。（真打开会把模型窗口带到前台，这和你手动打开文件的行为一致。）
+
+`reopen` 是真正的打开，Creo 会自动把 Navigator 切到「模型树」，无需手动点页签。
+
+注意：`pfcWindow.ExportRasterImage` 在 Creo 13.4 上对隐藏窗口实测会报
+`XToolkitGeneralError`，进一步调用还会挂起 Creo，当前不要用于自动预览。
 
 ## nanobot
 
@@ -82,6 +137,10 @@ cwd = <repo>
 的工具白名单，nanobot 会按设计不加载 Resources 和 Prompts。
 
 保存后重启 gateway，在 MCP 管理页检查连接状态和工具目录。写操作仍应保留客户端审批。
+Creo VB API 调用会在本机串行执行；Agent 不应并行调用多个 Creo 工具。工具返回 busy
+或超时后应把恢复说明交给用户，不能立即重复调用，也不能自行用 Shell 等待、检查或结束
+MCP/Creo 进程。MCP 会在第一次在线工具调用时启动一个持久 worker，并在后续调用中复用
+同一个 VB API Session；gateway 或 MCP 服务重启时才会正常断开。
 
 ## Codex CLI 与 Codex IDE
 
@@ -191,7 +250,7 @@ Creo 工具。工作区配置可以提交给团队，但绝对路径需要统一
 
 ## 标准协议检查
 
-本仓库的单元测试验证服务器身份、22 个工具、Schema、注解和 5 个 Resources。还可以用
+本仓库的单元测试验证服务器身份、31 个工具、Schema、注解和 5 个 Resources。还可以用
 MCP Inspector 做与具体客户端无关的协议检查。以下命令需要本机 Node.js/npm：
 
 ```powershell

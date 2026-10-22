@@ -137,6 +137,11 @@ class CreoModelSchemaTests(unittest.TestCase):
         active_request = InspectModelGeometryRequest()
         self.assertIsNone(active_request.model_name)
 
+    def test_geometry_lookup_accepts_numeric_imported_component_name(self) -> None:
+        request = InspectModelGeometryRequest(model_name="0009", model_kind="part")
+
+        self.assertEqual(request.model_name, "0009")
+
     def test_model_item_new_names_are_unique_per_type(self) -> None:
         with self.assertRaisesRegex(ValueError, "must be unique"):
             UpdateModelMetadataRequest(

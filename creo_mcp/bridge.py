@@ -4,29 +4,44 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
+import threading
+import time
 import winreg
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
 from .cad import CAD_IMPORT_TYPE, resolve_cad_source
+from .clearance_geometry import (
+    CLEARANCE_AUTOMATION_REVISION,
+    export_product_clearance_tray_step,
+    plan_product_clearance_tray,
+)
 from .errors import CreoMcpError
 from .models import (
+    AppliedDimensionUpdate,
+    AppliedModelItemRename,
+    AppliedParameterUpdate,
     BoxDimensions,
     BoxExtent,
     CreatePackagingBoxRequest,
     CreatePackagingBoxResult,
     CreatePartRequest,
     CreatePartResult,
+    CreateProductClearanceTrayRequest,
+    CreateProductClearanceTrayResult,
     CreoDimensionInfo,
-    EdgeGeometryInfo,
-    FindSurfacesRequest,
-    FindSurfacesResult,
     CreoFeatureInfo,
     CreoModelInfo,
     CreoModelItemInfo,
     CreoParameterInfo,
     CreoStatus,
+    EdgeGeometryInfo,
+    ExportModelRequest,
+    ExportModelResult,
+    FindSurfacesRequest,
+    FindSurfacesResult,
     GeometryBounds,
     GeometryDetailsResult,
     HandoffReportRequest,
@@ -35,9 +50,9 @@ from .models import (
     ImportCadResult,
     ImportStepRequest,
     ImportStepResult,
+    InspectGeometryDetailsRequest,
     InspectModelGeometryRequest,
     InspectModelStructureRequest,
-    InspectGeometryDetailsRequest,
     InspectPartRequest,
     InspectPartResult,
     InspectStepRequest,
@@ -45,13 +60,11 @@ from .models import (
     ModelStructureResult,
     OpenNativeModelRequest,
     OpenNativeModelResult,
-    AppliedDimensionUpdate,
-    AppliedModelItemRename,
-    AppliedParameterUpdate,
-    ExportModelRequest,
-    ExportModelResult,
+    ParameterUpdate,
     PlaceUdfRequest,
     PlaceUdfResult,
+    ProductClearanceTrayPlan,
+    ProductClearanceTrayPlanRequest,
     Point3D,
     RunUdfQualificationRequest,
     SaveModelAsRequest,
@@ -64,9 +77,16 @@ from .models import (
 from .step import inspect_step_file, resolve_step_path
 from .udf import load_qualified_udf, load_udf_manifest
 
-
+CONCEPT_DISPLAY_COLOR_HEX = "#42DFD0"
+CONCEPT_DISPLAY_FINISH = "MATTE_NON_METALLIC"
+CONCEPT_DISPLAY_ROLE = "VISUALIZATION_ONLY_NOT_MATERIAL"
 ASYNC_CONNECTION_CLSID = "{456E0110-2031-3907-AFE5-9201C97A915E}"
 ASYNC_CONNECTION_PROG_ID = "pfcls.pfcAsyncConnection"
+CREO_CONNECTION_MUTEX_NAME = r"Local\CreoMCP-VBAPI-Connection"
+CREO_CONNECTION_LOCK_TIMEOUT_SECONDS = 5
+CREO_CONNECT_TIMEOUT_SECONDS = 15
+CREO_DISCONNECT_TIMEOUT_SECONDS = 5
+CREO_CONNECTION_COOLDOWN_SECONDS = 3
 MODEL_DESCRIPTOR_PROG_ID = "pfcls.pfcModelDescriptor"
 RETRIEVE_OPTIONS_PROG_ID = "pfcls.pfcRetrieveModelOptions"
 CREO_PART_MODEL_TYPE = 1
@@ -122,6 +142,9 @@ EXPORT_EXTENSIONS = {
     "iges": {".igs", ".iges"},
     "parasolid": {".x_t", ".x_b"},
 }
+
+_PERSISTENT_SESSION: tuple[Any, Path] | None = None
+_PERSISTENT_SESSION_THREAD_ID: int | None = None
 PARAMETER_VALUE_TYPE_CODES = {
     "string": 0,
     "integer": 1,
@@ -722,37 +745,244 @@ def _saved_model_path(output_directory: Path, part_name: str) -> Path:
     return max(candidates, key=lambda path: path.stat().st_mtime_ns)
 
 
+def _activate_and_repaint_model(session: Any, model: Any) -> None:
+    """Show a model only through Creo's standard display path.
+
+    ``pfcModel.Display`` is the same session-level display path Creo uses for a
+    normal open. Two other operations have been observed to corrupt Creo 13.4's
+    graphics state (ORDER_DEBUG + later access violation) and are no longer used:
+    ``CreateModelWindow`` and explicit window ``Activate`` calls.
+
+    Set ``CREO_MCP_DISPLAY_MODE`` to control automatic display:
+    ``none`` skips it, ``reopen`` (default) erases the in-session copy of a
+    saved model and opens it again through File > Open, ``display_only`` calls
+    ``pfcModel.Display`` (view only; graphics interaction stays dead on Creo
+    13.4 because the session never really activated the model), ``openfile``
+    reopens without erasing first (a no-op while the model is in the session),
+    and ``display`` adds a current-window repaint.
+    """
+    mode = os.environ.get("CREO_MCP_DISPLAY_MODE", "reopen").strip().lower()
+    if mode == "none":
+        return
+    if mode == "reopen":
+        _reopen_saved_model(session, model)
+        return
+    if mode == "openfile":
+        _open_saved_model(session, model)
+        return
+    if mode == "display_only":
+        display = getattr(model, "Display", None)
+        if callable(display):
+            display()
+        return
+    display = getattr(model, "Display", None)
+    if callable(display):
+        try:
+            display()
+        except Exception as exc:
+            raise CreoMcpError(
+                "Creo created or loaded the model but could not display it. "
+                f"Vendor error: {exc}"
+            ) from exc
+    else:
+        # Older builds: refresh an existing window only, never create or activate one.
+        try:
+            window = session.GetModelWindow(model)
+        except Exception:
+            window = None
+        if window is None:
+            return
+    _repaint_model_if_current(session, model)
+
+
+def _reopen_saved_model(session: Any, model: Any) -> None:
+    """Erase the in-session copy of a saved model, then open it like File > Open.
+
+    ``session.OpenFile`` is a no-op display-wise while the model is already in
+    the session, and ``pfcModel.Display`` alone leaves Creo 13.4 with a window
+    whose graphics interaction never activates (clicks ignored, only mouse
+    rotate works). Erasing first turns the reopen into a genuine Creo open:
+    the model becomes the active model, the Navigator switches to the Model
+    Tree, and clicks work exactly as after a manual open. Unsaved models fall
+    back to ``Display``; models with unsaved edits cannot be erased and keep
+    their current window instead of losing changes.
+    """
+    try:
+        descr = model.Descr
+        directory = Path(str(getattr(descr, "Path", "") or "").strip())
+        file_name = str(getattr(model, "FileName", "") or "").strip()
+        if not str(directory) or not file_name or not (directory / file_name).is_file():
+            display = getattr(model, "Display", None)
+            if callable(display):
+                try:
+                    display()
+                except Exception:
+                    pass
+            return
+        erase = getattr(model, "Erase", None)
+        if callable(erase):
+            try:
+                erase()
+            except Exception:
+                pass
+        window = session.OpenFile(descr)
+        activate = getattr(window, "Activate", None)
+        if callable(activate):
+            activate()
+    except Exception:
+        # Display is best-effort; a failed reopen must not fail the CAD operation.
+        return
+
+
+def _open_saved_model(session: Any, model: Any) -> None:
+    """Open a saved model through Creo's normal file-open path.
+
+    This is the same session operation used by File > Open. It is the safest
+    automatic display path on Creo 13.4, where API-created windows can corrupt
+    the UI. Unsaved models are left alone; the caller still gets the result.
+    """
+    try:
+        descr = model.Descr
+        directory = Path(str(getattr(descr, "Path", "") or "").strip())
+        file_name = str(getattr(model, "FileName", "") or "").strip()
+        if not str(directory) or not file_name or not (directory / file_name).is_file():
+            return
+        window = session.OpenFile(descr)
+        activate = getattr(window, "Activate", None)
+        if callable(activate):
+            activate()
+    except Exception:
+        # Display is best-effort; a failed reopen must not fail the CAD operation.
+        return
+
+
+def _repaint_model_if_current(session: Any, model: Any) -> bool:
+    """Repaint an edited model when it is the model visible in the current window."""
+    try:
+        target_info = _model_info(model)
+        current_info = _model_info(session.CurrentModel)
+        if target_info is None or current_info != target_info:
+            return False
+        window = session.CurrentWindow
+        if window is None:
+            return False
+        window.Repaint()
+    except Exception as exc:
+        raise CreoMcpError(
+            "Creo regenerated the model but could not repaint the current window. "
+            "The in-memory changes may already be present; inspect Creo before "
+            f"retrying. Vendor error: {exc}"
+        ) from exc
+    return True
+
+
 @contextmanager
-def _connected_session() -> Iterator[tuple[Any, Path]]:
-    """Yield an official VB API session and always disconnect afterwards."""
+def _serialized_creo_connection() -> Iterator[None]:
+    """Allow only one local process to own a Creo VB API connection at a time."""
+    try:
+        import win32api
+        import win32event
+    except ImportError as exc:
+        raise CreoMcpError("The Python dependency pywin32 is missing.") from exc
+
+    mutex = win32event.CreateMutex(None, False, CREO_CONNECTION_MUTEX_NAME)
+    acquired = False
+    try:
+        wait_result = win32event.WaitForSingleObject(
+            mutex,
+            CREO_CONNECTION_LOCK_TIMEOUT_SECONDS * 1000,
+        )
+        acquired = wait_result in (
+            win32event.WAIT_OBJECT_0,
+            win32event.WAIT_ABANDONED,
+        )
+        if not acquired:
+            raise CreoMcpError(
+                "Creo is busy with another MCP or VB API operation. Wait for that operation "
+                "to finish before retrying; do not start concurrent Creo probes."
+            )
+        yield
+    finally:
+        if acquired:
+            win32event.ReleaseMutex(mutex)
+        win32api.CloseHandle(mutex)
+
+
+@contextmanager
+def _new_connected_session() -> Iterator[tuple[Any, Path]]:
+    """Create one official VB API connection and always disconnect afterwards."""
     try:
         import pythoncom
         import win32com.client
     except ImportError as exc:
         raise CreoMcpError("The Python dependency pywin32 is missing.") from exc
 
-    loadpoint = _configure_creo_environment()
-    connection = None
-    pythoncom.CoInitialize()
-    try:
-        factory = win32com.client.Dispatch(ASYNC_CONNECTION_PROG_ID)
-        connection = factory.Connect(None, None, None, None)
-    except CreoMcpError:
-        raise
-    except Exception as exc:  # Translate vendor COM errors into tool-actionable diagnostics.
-        raise CreoMcpError(
-            "Could not connect to Creo. Confirm that exactly one Creo session is running "
-            f"under this Windows account. Vendor error: {exc}"
-        ) from exc
-    try:
-        yield connection.Session, loadpoint
-    finally:
-        if connection is not None:
+    with _serialized_creo_connection():
+        loadpoint = _configure_creo_environment()
+        factory = None
+        connection = None
+        pythoncom.CoInitialize()
+        try:
             try:
-                connection.Disconnect(1)
-            except Exception:
-                pass
-        pythoncom.CoUninitialize()
+                factory = win32com.client.Dispatch(ASYNC_CONNECTION_PROG_ID)
+                connection = factory.Connect(
+                    None,
+                    None,
+                    None,
+                    CREO_CONNECT_TIMEOUT_SECONDS,
+                )
+            except CreoMcpError:
+                raise
+            except Exception as exc:  # Translate vendor COM errors into actionable diagnostics.
+                raise CreoMcpError(
+                    "Could not connect to Creo. Confirm that exactly one Creo session is running "
+                    f"under this Windows account. Vendor error: {exc}"
+                ) from exc
+            yield connection.Session, loadpoint
+        finally:
+            if connection is not None:
+                try:
+                    connection.Disconnect(CREO_DISCONNECT_TIMEOUT_SECONDS)
+                except Exception:
+                    pass
+            connection = None
+            factory = None
+            pythoncom.CoUninitialize()
+            # pfclscom can remain in COM teardown briefly after Disconnect returns. Keep the
+            # cross-process mutex during this window so another client cannot race activation.
+            time.sleep(CREO_CONNECTION_COOLDOWN_SECONDS)
+
+
+@contextmanager
+def persistent_creo_connection() -> Iterator[None]:
+    """Keep one VB API connection alive for a serialized long-running worker."""
+    global _PERSISTENT_SESSION, _PERSISTENT_SESSION_THREAD_ID
+
+    if _PERSISTENT_SESSION is not None:
+        raise CreoMcpError("A persistent Creo connection is already active in this process.")
+
+    with _new_connected_session() as connected:
+        _PERSISTENT_SESSION = connected
+        _PERSISTENT_SESSION_THREAD_ID = threading.get_ident()
+        try:
+            yield
+        finally:
+            _PERSISTENT_SESSION = None
+            _PERSISTENT_SESSION_THREAD_ID = None
+
+
+@contextmanager
+def _connected_session() -> Iterator[tuple[Any, Path]]:
+    """Reuse the worker connection or create one connection for a standalone call."""
+    if (
+        _PERSISTENT_SESSION is not None
+        and _PERSISTENT_SESSION_THREAD_ID == threading.get_ident()
+    ):
+        yield _PERSISTENT_SESSION
+        return
+
+    with _new_connected_session() as connected:
+        yield connected
 
 
 def get_status() -> CreoStatus:
@@ -783,8 +1013,7 @@ def create_empty_part(request: CreatePartRequest) -> CreatePartResult:
 
         part = session.CreatePart(request.part_name)
         if request.activate:
-            window = session.CreateModelWindow(part)
-            window.Activate()
+            _activate_and_repaint_model(session, part)
 
         created_model = _model_info(part)
         if created_model is None:
@@ -850,8 +1079,7 @@ def create_packaging_box(request: CreatePackagingBoxRequest) -> CreatePackagingB
         created.Save()
 
         if request.activate:
-            window = session.CreateModelWindow(created)
-            window.Activate()
+            _activate_and_repaint_model(session, created)
 
         created_model = _model_info(created)
         if created_model is None:
@@ -871,6 +1099,184 @@ def create_packaging_box(request: CreatePackagingBoxRequest) -> CreatePackagingB
             ),
             measured_extent_mm=measured_extent,
         )
+
+
+def _clearance_parameter_updates(
+    plan: ProductClearanceTrayPlan,
+) -> list[ParameterUpdate]:
+    """Return source ownership and hard-edge safety-envelope parameters."""
+    values: list[tuple[str, str, str | int | float | bool]] = [
+        ("MCP_AUTOMATION_ID", "string", "PRODUCT_CLEARANCE_TRAY"),
+        ("MCP_AUTOMATION_REVISION", "integer", CLEARANCE_AUTOMATION_REVISION),
+        ("MCP_MODEL_ROLE", "string", "PACKAGING_CONCEPT"),
+        ("MCP_SOURCE_FORMAT", "string", "STEP_PRODUCT"),
+        ("MCP_SOURCE_SHA256", "string", plan.product_sha256),
+        ("MCP_MODEL_STATE", "string", "CONCEPT_ONLY"),
+        ("MCP_PARAMETER_EDIT_MODE", "string", "REGENERATE_WITH_MCP"),
+        ("MCP_DISPLAY_COLOR_HEX", "string", CONCEPT_DISPLAY_COLOR_HEX),
+        ("MCP_DISPLAY_FINISH", "string", CONCEPT_DISPLAY_FINISH),
+        ("MCP_DISPLAY_ROLE", "string", CONCEPT_DISPLAY_ROLE),
+        ("PKG_CONCEPT_STAGE", "string", "HARD_EDGE_FIT"),
+        ("PKG_CAVITY_MODE", "string", plan.cavity_geometry_mode.upper()),
+        ("PKG_GEOMETRY_SOURCE", "string", plan.geometry_source_mode.upper()),
+        ("PKG_MESH_DEFLECTION_MM", "double", plan.mesh_linear_deflection_mm),
+        ("PKG_CLEAR_CONSERVATIVE_MM", "double", plan.clearance_conservatism_mm),
+        ("PKG_DEPTH_LAYER_MM", "double", plan.depth_layer_height_mm),
+        ("PKG_DEPTH_LAYER_COUNT", "integer", plan.depth_layer_count),
+        ("PKG_VERTICAL_CONSERVATIVE_MM", "double", plan.vertical_conservatism_mm),
+        ("PKG_INSERTION_AXIS", "string", plan.insertion_axis.upper()),
+        ("PKG_INSERTION_VERIFIED", "boolean", plan.insertion_path_verified),
+        ("PKG_STATIC_OUTSIDE_MM3", "double", plan.static_outside_volume_mm3),
+        ("PKG_SWEEP_OUTSIDE_MM3", "double", plan.insertion_sweep_outside_volume_mm3),
+        ("PKG_CORNER_RADIUS_MM", "double", plan.corner_radius_mm),
+        ("PKG_DRAFT_EXPANSION_MM", "double", plan.draft_expansion_mm),
+        ("PKG_HANDLING_RELIEFS", "string", plan.automatic_handling_reliefs.upper()),
+        ("PKG_SOURCE_SOLID_COUNT", "integer", plan.source_solid_count),
+        ("PKG_SIDE_CLEAR_MM", "double", plan.side_clearance_mm),
+        ("PKG_TOP_CLEAR_MM", "double", plan.top_clearance_mm),
+        ("PKG_BOTTOM_CLEAR_MM", "double", plan.bottom_clearance_mm),
+        ("PKG_WALL_THICKNESS_MM", "double", plan.wall_thickness_mm),
+        ("PKG_BOTTOM_THICKNESS_MM", "double", plan.bottom_thickness_mm),
+        ("PKG_FLANGE_THICKNESS_MM", "double", plan.flange_thickness_mm),
+        ("PKG_FLANGE_WIDTH_MM", "double", plan.flange_width_mm),
+    ]
+    return [
+        ParameterUpdate(name=name, value_type=value_type, value=value)
+        for name, value_type, value in values
+    ]
+
+
+def _apply_new_model_parameters(model: Any, updates: list[ParameterUpdate]) -> None:
+    factory = _dispatch_factory(MODEL_ITEM_FACTORY_PROG_ID)
+    for update in updates:
+        try:
+            existing = model.GetParam(update.name)
+        except Exception as exc:
+            if "XToolkitNotFound" in str(exc):
+                existing = None
+            else:
+                raise CreoMcpError(
+                    f"Could not inspect generated model parameter {update.name!r}."
+                ) from exc
+        if existing is not None:
+            raise CreoMcpError(
+                f"Generated model unexpectedly already contains parameter {update.name!r}."
+            )
+        model.CreateParam(update.name, _parameter_value(factory, update))
+
+
+def _rename_generated_import_feature(
+    model: Any,
+    name: str = "CONCEPT_TRAY_BREP",
+) -> None:
+    raw_features, _ = _bounded_sequence(model.ListItems(CREO_FEATURE_ITEM_TYPE), 100000)
+    imported = [feature for feature in raw_features if int(feature.FeatType) == 22]
+    if len(imported) != 1:
+        raise CreoMcpError(
+            "Generated concept model must contain exactly one imported BREP feature; "
+            f"Creo returned {len(imported)}."
+        )
+    imported[0].SetName(name)
+
+
+def _validate_expected_extent(measured: BoxExtent, expected: BoxDimensions) -> None:
+    requested = sorted((expected.length_mm, expected.width_mm, expected.height_mm))
+    actual = sorted((measured.x_mm, measured.y_mm, measured.z_mm))
+    for requested_value, actual_value in zip(requested, actual, strict=True):
+        tolerance = max(0.05, abs(requested_value) * 0.001)
+        if abs(requested_value - actual_value) > tolerance:
+            raise CreoMcpError(
+                "Generated concept geometry does not match its planned extent: "
+                f"expected {expected.model_dump()}, measured {measured.model_dump()}."
+            )
+
+
+def create_product_clearance_tray(
+    request: CreateProductClearanceTrayRequest,
+) -> CreateProductClearanceTrayResult:
+    """Create one protected hard-edge tray from a verified product-clearance plan."""
+    output_directory = Path(request.output_directory).expanduser()
+    if not output_directory.is_absolute():
+        raise CreoMcpError(f"output_directory must be absolute: {request.output_directory}")
+    output_directory = output_directory.resolve(strict=False)
+    if not output_directory.is_dir():
+        raise CreoMcpError(
+            f"output_directory does not exist or is not a directory: {output_directory}"
+        )
+    _ensure_new_part_name(output_directory, request.part_name)
+
+    planning_request = ProductClearanceTrayPlanRequest.model_validate(
+        request.model_dump(exclude={"plan_id", "confirmation", "activate"})
+    )
+    plan = plan_product_clearance_tray(planning_request)
+    if request.plan_id != plan.plan_id:
+        raise CreoMcpError(
+            "plan_id does not match the current product file and clearance parameters."
+        )
+
+    result: CreateProductClearanceTrayResult | None = None
+    with tempfile.TemporaryDirectory(prefix="creo-mcp-clearance-") as raw_directory:
+        generated_step = Path(raw_directory) / f"{request.part_name}.step"
+        generated_extent = export_product_clearance_tray_step(plan, generated_step)
+        _validate_expected_extent(generated_extent, plan.expected_extent_mm)
+        source = inspect_step_file(InspectStepRequest(step_path=str(generated_step)))
+        if (
+            source.inferred_model_kind != "part"
+            or source.solid_body_count != 1
+            or source.closed_shell_count != 1
+        ):
+            raise CreoMcpError(
+                "Generated product-clearance STEP did not validate as one closed solid part."
+            )
+
+        with _connected_session() as (session, _):
+            _ensure_model_not_loaded(session, request.part_name)
+            session.ChangeDirectory(str(output_directory))
+            created, detected_type = _import_new_model(
+                session,
+                generated_step,
+                "generated product-clearance concept STEP",
+                CREO_STEP_IMPORT_TYPE,
+                request.part_name,
+            )
+            if detected_type != CREO_PART_MODEL_TYPE:
+                raise CreoMcpError("Creo did not import the generated concept as a part.")
+            _rename_generated_import_feature(created, "PRODUCT_CLEARANCE_BREP")
+            _apply_new_model_parameters(created, _clearance_parameter_updates(plan))
+            created.Regenerate(None)
+
+            length_unit = _length_unit_name(created)
+            measured_extent = _extent_to_millimetres(_measure_extent(created), length_unit)
+            _validate_expected_extent(measured_extent, plan.expected_extent_mm)
+            created.Save()
+
+            if request.activate:
+                _activate_and_repaint_model(session, created)
+
+            created_model = _model_info(created)
+            if created_model is None:
+                raise CreoMcpError(
+                    "Creo created the product-clearance tray but returned no model metadata."
+                )
+            result = CreateProductClearanceTrayResult(
+                created_model=created_model,
+                model_path=str(_saved_model_path(output_directory, request.part_name)),
+                working_directory=str(output_directory),
+                saved=True,
+                activated=request.activate,
+                model_state="CONCEPT_ONLY",
+                creo_geometry_kind="imported_brep",
+                parameter_update_mode="regenerate_with_mcp",
+                generated_step_deleted=True,
+                source_product_path=plan.product_step_path,
+                source_product_sha256=plan.product_sha256,
+                applied_plan=plan,
+                measured_extent_mm=measured_extent,
+            )
+
+    if result is None:
+        raise CreoMcpError("Product-clearance concept creation did not produce a result.")
+    return result
 
 
 def _import_new_model(
@@ -925,8 +1331,7 @@ def open_native_model(request: OpenNativeModelRequest) -> OpenNativeModelResult:
         measured_extent = _extent_to_millimetres(_measure_extent(model), length_unit)
         volume_mm3 = _volume_in_millimetres(model, length_unit)
         if request.activate:
-            window = session.CreateModelWindow(model)
-            window.Activate()
+            _activate_and_repaint_model(session, model)
 
         model_info = _model_info(model)
         if model_info is None:
@@ -961,8 +1366,7 @@ def import_cad(request: ImportCadRequest) -> ImportCadResult:
         measured_extent = _extent_to_millimetres(_measure_extent(created), length_unit)
         volume_mm3 = _volume_in_millimetres(created, length_unit)
         if request.activate:
-            window = session.CreateModelWindow(created)
-            window.Activate()
+            _activate_and_repaint_model(session, created)
 
         created_model = _model_info(created)
         if created_model is None:
@@ -996,8 +1400,7 @@ def import_step(request: ImportStepRequest) -> ImportStepResult:
         length_unit = _length_unit_name(created)
         measured_extent = _extent_to_millimetres(_measure_extent(created), length_unit)
         if request.activate:
-            window = session.CreateModelWindow(created)
-            window.Activate()
+            _activate_and_repaint_model(session, created)
 
         created_model = _model_info(created)
         if created_model is None:
@@ -1481,6 +1884,7 @@ def _place_validated_udf(
             if group is None:
                 raise CreoMcpError("Creo returned no feature group after UDF placement.")
             model.Regenerate(None)
+            _repaint_model_if_current(session, model)
         except CreoMcpError:
             raise
         except Exception as exc:
@@ -1658,6 +2062,7 @@ def update_model_metadata(request: UpdateModelMetadataRequest) -> UpdateModelMet
                     AppliedParameterUpdate(**update.model_dump(), created=created)
                 )
             model.Regenerate(None)
+            _repaint_model_if_current(session, model)
         except Exception as exc:
             raise CreoMcpError(
                 "Creo could not complete the model metadata update. Some in-memory "
@@ -1824,8 +2229,7 @@ def save_model_as(request: SaveModelAsRequest) -> SaveModelAsResult:
             raise CreoMcpError("Creo reported a successful copy but no native file was found.")
         saved_path = max(candidates, key=lambda path: path.stat().st_mtime_ns)
         if request.activate_copy:
-            window = session.CreateModelWindow(copied)
-            window.Activate()
+            _activate_and_repaint_model(session, copied)
 
         return SaveModelAsResult(
             source_model=source_info,
