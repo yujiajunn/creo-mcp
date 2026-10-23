@@ -113,6 +113,10 @@ Agent 建模过程中直接看到画面；如需单独截图，调用 `creo_capt
 `notifications/progress` 进度通知（0–100，含阶段说明）；客户端在 `tools/call` 里带上
 `progressToken` 即可收到。
 
+`creo_plan_product_clearance_tray` 干跑会自动附一张方案渲染图（等轴测 + 俯视、带尺寸
+标注，不经过 Creo，纯离线计算）——方向映射对不对当场就能看出来；设
+`CREO_MCP_PLAN_PREVIEW=0` 可关闭。
+
 `reopen` 是真正的打开，Creo 会自动把 Navigator 切到「模型树」，无需手动点页签。
 
 注意：`pfcWindow.ExportRasterImage` 在 Creo 13.4 上对隐藏窗口实测会报

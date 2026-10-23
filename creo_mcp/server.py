@@ -139,6 +139,20 @@ def _preview_enabled() -> bool:
     return mode in {"reopen", "display_only", "display"}
 
 
+def _attach_image(result: Any, path: Path, key: str) -> Any:
+    payload = result.model_dump(mode="json", by_alias=True)
+    return CallToolResult(
+        content=[
+            TextContent(
+                type="text",
+                text=json.dumps({"result": payload, key: str(path)}, ensure_ascii=False),
+            ),
+            Image(path=str(path), format="png").to_image_content(),
+        ],
+        structuredContent=payload,
+    )
+
+
 def _with_preview(result: Any) -> Any:
     """Attach a screenshot of the visible Creo window to a tool result.
 
@@ -152,22 +166,42 @@ def _with_preview(result: Any) -> Any:
         from .screenshot import capture_creo_window
 
         path, _title, _width, _height = capture_creo_window()
-        payload = result.model_dump(mode="json", by_alias=True)
-        return CallToolResult(
-            content=[
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {"result": payload, "screenshot_path": str(path)},
-                        ensure_ascii=False,
-                    ),
-                ),
-                Image(path=str(path), format="png").to_image_content(),
-            ],
-            structuredContent=payload,
-        )
+        return _attach_image(result, path, "screenshot_path")
     except Exception:
         return result
+
+
+def _plan_preview_enabled() -> bool:
+    return os.environ.get("CREO_MCP_PLAN_PREVIEW", "1").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }
+
+
+def _plan_with_preview(plan: Any) -> Any:
+    """Render a Creo-free iso+top picture of the planned tray next to the plan.
+
+    Orientation mistakes (wrong axis chosen as the insertion direction) are
+    obvious in the picture and cheap to catch at dry-run time instead of after
+    a multi-minute Creo import. Any rendering problem returns the bare plan.
+    """
+    if not _plan_preview_enabled():
+        return plan
+    try:
+        from .clearance_geometry import build_product_clearance_tray_shape
+        from .preview_render import render_shape_preview
+        from .screenshot import screenshots_dir
+
+        shape = build_product_clearance_tray_shape(plan)
+        path = screenshots_dir() / f"plan_{plan.plan_id}.png"
+        render_shape_preview(
+            shape, path, f"plan {plan.plan_id}  product: {Path(plan.product_step_path).name}"
+        )
+        return _attach_image(plan, path, "preview_path")
+    except Exception:
+        return plan
 
 
 _ISOLATED_CALL_LOCK = threading.Lock()
@@ -994,7 +1028,8 @@ def create_server() -> FastMCP:
                 plan_product_clearance_tray, request, progress_cb=_plan_cb
             )
         )
-        return await _await_with_progress(task, frames, ctx)
+        plan = await _await_with_progress(task, frames, ctx)
+        return await asyncio.to_thread(_plan_with_preview, plan)
 
     @server.tool(
         name="creo_inspect_step_solids",
