@@ -1,0 +1,76 @@
+{
+  "op": "difference",
+  "children": [
+    {
+      "op": "union",
+      "children": [
+        {
+          "op": "box",
+          "length_mm": 157.95,
+          "width_mm": 140.78,
+          "height_mm": 38.024,
+          "at": {
+            "x_mm": -70.44,
+            "y_mm": -52.98,
+            "z_mm": 0
+          }
+        },
+        {
+          "op": "box",
+          "length_mm": 399.93,
+          "width_mm": 16.2,
+          "height_mm": 38.024,
+          "at": {
+            "x_mm": -387.07,
+            "y_mm": 60.61,
+            "z_mm": 0
+          }
+        },
+        {
+          "op": "box",
+          "length_mm": 173.95,
+          "width_mm": 156.78,
+          "height_mm": 1.2,
+          "at": {
+            "x_mm": -78.44,
+            "y_mm": -60.98,
+            "z_mm": 36.824
+          }
+        },
+        {
+          "op": "box",
+          "length_mm": 415.93,
+          "width_mm": 32.2,
+          "height_mm": 1.2,
+          "at": {
+            "x_mm": -395.07,
+            "y_mm": 52.61,
+            "z_mm": 36.824
+          }
+        }
+      ]
+    },
+    {
+      "op": "box",
+      "length_mm": 155.55,
+      "width_mm": 138.38,
+      "height_mm": 36.824,
+      "at": {
+        "x_mm": -69.24,
+        "y_mm": -51.78,
+        "z_mm": 1.2
+      }
+    },
+    {
+      "op": "box",
+      "length_mm": 397.53,
+      "width_mm": 13.8,
+      "height_mm": 27.044,
+      "at": {
+        "x_mm": -385.87,
+        "y_mm": 61.81,
+        "z_mm": 10.98
+      }
+    }
+  ]
+}

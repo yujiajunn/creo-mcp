@@ -107,7 +107,7 @@ from .udf import validate_udf_manifest
 from .version import SERVER_NAME, SERVER_VERSION
 
 PROBE_TIMEOUT_SECONDS = 30
-OPERATION_TIMEOUT_SECONDS = 140
+OPERATION_TIMEOUT_SECONDS = 420
 MCP_CALL_LOCK_TIMEOUT_SECONDS = 5
 PERSISTENT_WORKER_RESPONSE_PREFIX = "__CREO_MCP_RESPONSE__:"
 READ_ONLY_ANNOTATIONS = ToolAnnotations(
@@ -714,6 +714,11 @@ def create_server() -> FastMCP:
             "Use Creo tools only for explicit CAD requests. Inspect and plan before writing. "
             "Model edits, native copies, and exports require exact confirmation values. "
             "Edits remain unsaved by default, and file operations never permit overwrite. "
+            "For product packaging/trays you MUST use the validated pipeline: "
+            "creo_plan_product_clearance_tray first, then creo_create_product_clearance_tray "
+            "with the returned plan_id. Never hand-assemble trays from bounding boxes with "
+            "creo_build_geometry: it produces ad-hoc single solids and its outer walls would "
+            "follow the boxes, not the guaranteed rectangular clearance-tray geometry. "
             "Never call Creo tools concurrently. After a busy or timeout error, do not retry "
             "automatically and do not use shell commands to wait for or manage MCP processes; "
             "report the recovery guidance to the user."
@@ -1291,7 +1296,9 @@ def create_server() -> FastMCP:
             "name that must not exist yet. The imported feature is named GENERATED_SOLID; "
             "this produces a solid-body concept, not parametric sketch features. Requires "
             "confirmation='build_geometry'. Emits progress notifications and, when "
-            "activated, returns an automatic Creo window screenshot."
+            "activated, returns an automatic Creo window screenshot. Do NOT use this tool "
+            "to hand-build packaging trays from boxes — use creo_plan_product_clearance_tray "
+            "and creo_create_product_clearance_tray for trays."
         ),
         annotations=WRITE_ANNOTATIONS,
         structured_output=True,

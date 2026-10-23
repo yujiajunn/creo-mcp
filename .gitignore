@@ -10,3 +10,7 @@ dist/
 
 # Creo 录屏/回放临时文件
 trail.txt*
+
+# Agent 临时探针脚本
+_probe_*.py
+_tmp_*.py
