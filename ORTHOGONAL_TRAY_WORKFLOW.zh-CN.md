@@ -24,7 +24,7 @@
 | MCP 源码 | `<repo>` | 读取 STEP、生成与校验托盘、导入并保存 Creo 模型。 |
 | 几何生成逻辑 | `creo_mcp\clearance_geometry.py` | 按实体与局部深度生成直角分区型腔。 |
 | Creo 写入逻辑 | `creo_mcp\bridge.py` | 导入生成的 STEP、写入参数、保存并激活新模型。 |
-| 当前 skill | `<skill-dir>\SKILL.md` | Codex 执行这类任务时使用的流程与约束。 |
+| 当前 skill | `<Codex 技能目录>\SKILL.md` | Codex 执行这类任务时使用的流程与约束。 |
 
 MCP 是标准 MCP 服务，可被支持 MCP 的不同客户端调用。当前 skill 是 Codex 的本地说明；其他客户端需把相同流程作为自己的提示词、规则或技能配置。
 
@@ -85,24 +85,24 @@ MCP 是标准 MCP 服务，可被支持 MCP 的不同客户端调用。当前 sk
 
 ## 已验证示例：针管
 
-输入模型：`<user-desktop>\针管.stp`
+输入模型：`<桌面>\针管.stp`
 
-输出模型：`<public-docs>\needle_tube_orthogonal_tray_r02.prt.1`
+输出模型：`<输出目录>\needle_tube_orthogonal_tray_r02.prt.1`
 
 结果：
 
 - 读取到 `2` 个实体。
 - 托盘整体尺寸：`96.14 x 59.64 x 24.12 mm`。
-- 2026-10-26 复查（输入为 `<user-desktop>\样本\针管.stp`）：同向 `{x, y, z}` 得 `97.10 x 40.60 x 44.60`，深度过大；改用 `{x, z, -y}` 得 `97.10 x 60.60 x 24.60`，即「摆放方向怎么选」表里的采用版本，落件名 `zhengguan_tray_draft_r04`。
+- 2026-10-26 复查（输入为 `<样本目录>\针管.stp`）：同向 `{x, y, z}` 得 `97.10 x 40.60 x 44.60`，深度过大；改用 `{x, z, -y}` 得 `97.10 x 60.60 x 24.60`，即「摆放方向怎么选」表里的采用版本，落件名 `zhengguan_tray_draft_r04`。
 - 静态容纳校验：零器件外露体积。
 - `+Z` 直线装入校验：零干涉体积。
 - 已在 Creo 中保存并激活。
 
 ## 已验证示例：20 组件装配
 
-输入模型：`<user-desktop>\\00_asm.stp`
+输入模型：`<桌面>\\00_asm.stp`
 
-输出模型：`<public-docs>\\assembly_orthogonal_tray_r01.prt.1`
+输出模型：`<输出目录>\\assembly_orthogonal_tray_r01.prt.1`
 
 结果：
 

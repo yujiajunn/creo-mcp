@@ -320,7 +320,7 @@ API 结果：
 - 将活动 `针管.asm` 复制为新模型 `syringe_mcp_validation.asm`，目标目录事先不存在同名
   `.asm` 或版本文件。
 - `CopyAndRetrieve` 成功，输出文件为
-  `<user-desktop>\CreoMCPValidation\syringe_mcp_validation.asm.1`，大小 68570 字节。
+  `<验证目录>\syringe_mcp_validation.asm.1`，大小 68570 字节。
 - 新副本成功激活，返回 `source_modified=false`、`saved=true`，原模型文件未被覆盖。
 - 从活动副本重新读取到 `SYRINGE_STEP_IMPORT`、全部 4 个 `MCP_` 参数和修订号 2，
   证明内存维护信息进入了新副本。
@@ -332,7 +332,7 @@ API 结果：
 结果：
 
 - 从新原生副本导出
-  `<user-desktop>\CreoMCPValidation\syringe_mcp_validation.step`，大小 94084 字节。
+  `<验证目录>\syringe_mcp_validation.step`，大小 94084 字节。
 - 返回 `source_modified=false`、`saved=false`，导出没有再次保存或修改源装配。
 - 离线解析确认文件为 Creo 生成的 `CONFIG_CONTROL_DESIGN` STEP、单位为毫米，包含
   2 个实体、55 个高级曲面、2 个闭合壳体和 2 条装配关系，推断类型为 assembly。
@@ -378,7 +378,10 @@ PTC 自带样例零件上成功完成一次非交互放置之前，UDF 写入能
 
 ## 下一验证步骤
 
-1. 离线验证 `live-validation/node.candidate.udf.json`，取得候选 `validation_id`。
+1. 离线验证 `live-validation/node.candidate.udf.json`，取得候选 `validation_id`。该清单的
+   `udf_file` 按约定写成相对清单自身的 `node.gph`，因此验证前要把 PTC 自带的 `node.gph`
+   （Creo 安装目录下 `Common Files\vbapi\vbapi_examples\models\`）复制到清单旁边；
+   该资产属 PTC 版权物，不入库，`sha256` 已把它的字节钉死。
 2. 接入实际任务时，在干净、未保存的测试模型上完成尺寸最小值、最大值和非法值验证。
 3. 只有确认上述步骤后，才把正式清单标记为 `verified_non_interactive=true` 并重新验证。
 4. 在带命名驱动尺寸的测试零件副本上验证毫米/英寸尺寸更新。

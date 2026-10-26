@@ -72,7 +72,7 @@ Creo 弹窗补充。
 
 ```json
 {
-  "manifest_path": "<udf-dir>\\node.udf.json"
+  "manifest_path": "<UDF 目录>\\node.udf.json"
 }
 ```
 
@@ -83,7 +83,7 @@ Creo 弹窗补充。
 
 ```json
 {
-  "manifest_path": "<udf-dir>\\node.candidate.udf.json",
+  "manifest_path": "<UDF 目录>\\node.candidate.udf.json",
   "validation_id": "第一阶段返回的64位标识",
   "model_name": null,
   "model_kind": null,
@@ -113,7 +113,7 @@ Creo 弹窗补充。
 
 ```json
 {
-  "manifest_path": "<udf-dir>\\node.udf.json",
+  "manifest_path": "<UDF 目录>\\node.udf.json",
   "validation_id": "第一阶段返回的64位标识",
   "model_name": null,
   "model_kind": null,

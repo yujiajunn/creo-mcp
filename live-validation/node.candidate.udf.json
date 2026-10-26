@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "udf_name": "node",
-  "udf_file": "D:\\PTC\\Creo13.4\\Creo 13.4.1.0\\Common Files\\vbapi\\vbapi_examples\\models\\node.gph",
+  "udf_file": "node.gph",
   "sha256": "A3239CB7BCB521C6D26094384C1FA72120DF0EBB11F7050A91E62D628529312B",
   "qualified_creo_versions": [
     "13.4.1.0"

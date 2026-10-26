@@ -154,6 +154,6 @@ cd <repo>
 .\.venv\Scripts\creo-mcp.exe --doctor --probe                # 队友实测 10/10 ok，connected=True
 ```
 
-实机会话验证（stdio JSON-RPC，12/12 通过）：`initialize` → `tools/list`(29, 135,749 B) → `resources/list`(7) → `tools/call creo_tool_catalog` → `tools/call creo_get_capabilities` → `resources/read creo://server/status` → `resources/read creo://tools/catalog` → **真实 Creo 会话**：`creo_get_status` 返回 `connected=true, loadpoint=D:\PTC\Creo13.4\Creo 13.4.1.0, active_model=zhengguan_box_r01.prt`；`creo_get_active_model` 返回 `ZHENGGUAN_BOX_R01`。
+实机会话验证（stdio JSON-RPC，12/12 通过）：`initialize` → `tools/list`(29, 135,749 B) → `resources/list`(7) → `tools/call creo_tool_catalog` → `tools/call creo_get_capabilities` → `resources/read creo://server/status` → `resources/read creo://tools/catalog` → **真实 Creo 会话**：`creo_get_status` 返回 `connected=true, loadpoint=<Creo 安装目录>, active_model=zhengguan_box_r01.prt`；`creo_get_active_model` 返回 `ZHENGGUAN_BOX_R01`。
 
 未深查项：`bridge.py` 的 COM 细节实现（连接重试、单位换算路径、UDF 放置的具体 API 序列）本轮未逐行读取；`docs/LIVE_VALIDATION.zh-CN.md` 的既往记录未逐条复核。相关结论只使用可 grep/实测的证据。

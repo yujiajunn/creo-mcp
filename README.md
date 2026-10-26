@@ -343,7 +343,7 @@ own VB API connection, because Creo allows just one:
 ```powershell
 <repo>\.venv\Scripts\python.exe .\creo_mcp_server.py `
   --operation inspect_part `
-  --payload '{"part_path":"<work-dir>\\packaging_box_template.prt"}'
+  --payload '{"part_path":"D:\\path\\packaging_box_template.prt"}'
 ```
 
 After obtaining stable IDs from `inspect_model_structure`, inspect selected
@@ -392,7 +392,7 @@ Validate a candidate or qualified UDF manifest offline before any model mutation
 ```powershell
 <repo>\.venv\Scripts\python.exe .\creo_mcp_server.py `
   --operation validate_udf_manifest `
-  --payload '{"manifest_path":"<udf-dir>\\node.candidate.udf.json"}'
+  --payload '{"manifest_path":"<UDF 目录>\\node.candidate.udf.json"}'
 ```
 
 For a candidate whose `verified_non_interactive` flag is false, pass the returned

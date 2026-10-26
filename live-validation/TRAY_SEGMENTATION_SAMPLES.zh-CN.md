@@ -134,12 +134,12 @@ slot6  L=114.00 W= 5.90  cum_depth=68.00  x= -3.00  y= 10.50
 .\.venv\Scripts\python.exe -m pytest tests\test_cavity_segments.py -q
 
 # 对任意器件出分段表（离线只读，需要 cadquery-ocp-novtk，已在 concept-geometry extra）
-.\.venv\Scripts\python.exe live-validation\segment_probe.py "<user-desktop>\样本\针管.stp"
-.\.venv\Scripts\python.exe live-validation\segment_probe.py "<user-desktop>\样本\00_asm.stp"
-.\.venv\Scripts\python.exe live-validation\segment_probe.py "<user-desktop>\样本\吸塑盒.stp"
+.\.venv\Scripts\python.exe live-validation\segment_probe.py "<样本目录>\针管.stp"
+.\.venv\Scripts\python.exe live-validation\segment_probe.py "<样本目录>\00_asm.stp"
+.\.venv\Scripts\python.exe live-validation\segment_probe.py "<样本目录>\吸塑盒.stp"
 
 # 换抽拔方向 / 改间隙（方向一改，分段表完全不同）
-.\.venv\Scripts\python.exe live-validation\segment_probe.py "<user-desktop>\样本\00_asm.stp" `
+.\.venv\Scripts\python.exe live-validation\segment_probe.py "<样本目录>\00_asm.stp" `
   --axes y,-x,z --side 2.0 --k 8 --min-step 2.0
 ```
 
@@ -161,7 +161,7 @@ slot6  L=114.00 W= 5.90  cum_depth=68.00  x= -3.00  y= 10.50
 ```text
 plan_id                 = 997168ffbfd8f850        insertion_path_verified = True
 created_model           = zhengguan_tray_draft_r01.prt  (instance ZHENGGUAN_TRAY_DRAFT_R01)
-model_path              = <user-appdata>\Local\Temp\creo-tray-draft\zhengguan_tray_draft_r01.prt.1  (353,515 B)
+model_path              = <本机用户目录>\AppData\Local\Temp\creo-tray-draft\zhengguan_tray_draft_r01.prt.1  (353,515 B)
 measured_extent_mm      = 102.500 × 46.000 × 45.800   == expected_extent_mm（逐位相同）
 model_state             = CONCEPT_ONLY            creo_geometry_kind = imported_brep
 source_product_sha256   = 3458d0fb…403ca494       generated_step_deleted = true
