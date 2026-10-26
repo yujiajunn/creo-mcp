@@ -402,11 +402,12 @@ class MaintenanceTests(unittest.TestCase):
             ):
                 result = save_model_as(request)
 
-        # bridge changes into and back out of resolved directories.
-        source = str(Path(raw_source).resolve(strict=False))
+        # The bridge resolves the directory it changes *into* (bridge.save_model_as),
+        # but restores the working directory with the exact string Creo reported, so the
+        # original spelling survives untouched. Only the target needs canonicalising.
         target = str(Path(raw_target).resolve(strict=False))
-        self.assertEqual(session.directory, source)
-        self.assertEqual(session.directory_changes, [target, source])
+        self.assertEqual(session.directory, raw_source)
+        self.assertEqual(session.directory_changes, [target, raw_source])
         self.assertTrue(result.saved_path.endswith("copy.prt.1"))
         self.assertTrue(session.window.activated)
         self.assertEqual(session.window.repaint_count, 1)
