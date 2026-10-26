@@ -24,9 +24,9 @@
 | MCP 源码 | `<repo>` | 读取 STEP、生成与校验托盘、导入并保存 Creo 模型。 |
 | 几何生成逻辑 | `creo_mcp\clearance_geometry.py` | 按实体与局部深度生成直角分区型腔。 |
 | Creo 写入逻辑 | `creo_mcp\bridge.py` | 导入生成的 STEP、写入参数、保存并激活新模型。 |
-| 当前 skill | `<Codex 技能目录>\SKILL.md` | Codex 执行这类任务时使用的流程与约束。 |
+| 流程约定 | 本文件（配合 `creo_mcp\docs\LIVE_VALIDATION.zh-CN.md`） | 客户端执行这类任务时使用的流程与约束。 |
 
-MCP 是标准 MCP 服务，可被支持 MCP 的不同客户端调用。当前 skill 是 Codex 的本地说明；其他客户端需把相同流程作为自己的提示词、规则或技能配置。
+MCP 是标准 MCP 服务，可被支持 MCP 的不同客户端调用。本文件是这套流程的唯一来源；各客户端引用它作为自己的提示词、规则或技能配置，不再各存一份本地副本（原先给 Codex 用的本地 `SKILL.md` 已废弃，不再维护）。
 
 ## 当前生成方式
 
