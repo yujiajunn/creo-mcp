@@ -19,7 +19,6 @@ from mcp.server.fastmcp import Context, FastMCP, Image
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
 from . import broker
-
 from .bridge import (
     build_geometry,
     create_empty_part,
@@ -43,6 +42,7 @@ from .bridge import (
     update_feature_suppression,
     update_model_metadata,
 )
+from .clearance_geometry import plan_product_clearance_tray
 from .errors import CreoMcpError
 from .fit_analysis import inspect_step_solids
 from .geometry_dsl import BuildGeometryRequest, BuildGeometryResult
@@ -105,7 +105,6 @@ from .observability import (
     read_recent_operations,
 )
 from .step import inspect_step_file
-from .clearance_geometry import plan_product_clearance_tray
 from .udf import validate_udf_manifest
 from .version import SERVER_NAME, SERVER_VERSION
 
@@ -1631,8 +1630,28 @@ def _flag_value(argv: list[str], flag: str) -> str | None:
     return argv[index]
 
 
+def _configure_stdio_utf8() -> None:
+    """Force UTF-8 on the CLI streams.
+
+    The maintenance CLI prints Chinese hints. On Windows the inherited stream
+    encoding follows the console code page (frequently cp936), so the text is
+    re-encoded there and arrives garbled at anything decoding UTF-8 — a pipe or
+    a redirected file, which is how agents read it. UTF-8 is also what the MCP
+    stdio transport requires, so this is correct for the server path as well.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def main() -> None:
     """Run either a maintenance CLI, a one-shot probe, the broker, or the MCP transport."""
+    _configure_stdio_utf8()
     argv = sys.argv[1:]
     if "--help" in argv or "-h" in argv:
         print(USAGE, end="")
