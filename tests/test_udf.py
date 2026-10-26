@@ -137,7 +137,7 @@ class _FakeSession:
 
 @contextmanager
 def _fake_connection(session: _FakeSession):
-    yield session, Path(r"D:\PTC\Creo13.4\Creo 13.4.1.0")
+    yield session, Path(r"D:\FixtureCreo\Creo13.4\Creo 13.4.1.0")
 
 
 def _manifest_payload(

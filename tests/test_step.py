@@ -92,7 +92,7 @@ class _FakeSession:
 
 @contextmanager
 def _fake_connection(session: _FakeSession):
-    yield session, Path(r"D:\PTC\Creo13.4")
+    yield session, Path(r"D:\FixtureCreo\Creo13.4")
 
 
 class StepTests(unittest.TestCase):

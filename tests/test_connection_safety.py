@@ -54,13 +54,13 @@ class BridgeConnectionSafetyTests(unittest.TestCase):
             patch("creo_mcp.bridge._serialized_creo_connection", return_value=nullcontext()),
             patch(
                 "creo_mcp.bridge._configure_creo_environment",
-                return_value=Path(r"D:\PTC\Creo"),
+                return_value=Path(r"D:\FixtureCreo\Creo"),
             ),
             patch("creo_mcp.bridge.time.sleep") as sleep,
         ):
             with bridge._connected_session() as (session, loadpoint):
                 self.assertIs(session, connection.Session)
-                self.assertEqual(loadpoint, Path(r"D:\PTC\Creo"))
+                self.assertEqual(loadpoint, Path(r"D:\FixtureCreo\Creo"))
 
         factory.Connect.assert_called_once_with(
             None,
@@ -118,7 +118,7 @@ class BridgeConnectionSafetyTests(unittest.TestCase):
             patch("creo_mcp.bridge._serialized_creo_connection", return_value=nullcontext()),
             patch(
                 "creo_mcp.bridge._configure_creo_environment",
-                return_value=Path(r"D:\PTC\Creo"),
+                return_value=Path(r"D:\FixtureCreo\Creo"),
             ),
             patch("creo_mcp.bridge.time.sleep") as sleep,
             self.assertRaisesRegex(CreoMcpError, "activation failed"),bridge._connected_session()
@@ -131,7 +131,7 @@ class BridgeConnectionSafetyTests(unittest.TestCase):
 
     def test_persistent_worker_reuses_one_connected_session(self) -> None:
         session = object()
-        connected = (session, Path(r"D:\PTC\Creo"))
+        connected = (session, Path(r"D:\FixtureCreo\Creo"))
 
         with patch(
             "creo_mcp.bridge._new_connected_session",

@@ -26,7 +26,7 @@ class CreoModelSchemaTests(unittest.TestCase):
     def test_status_serializes_active_model(self) -> None:
         status = CreoStatus(
             connected=True,
-            creo_loadpoint=r"D:\PTC\Creo13.4\Creo 13.4.1.0",
+            creo_loadpoint=r"D:\FixtureCreo\Creo13.4\Creo 13.4.1.0",
             working_directory=r"<work-dir>",
             active_model=CreoModelInfo(
                 file_name="box.prt",
