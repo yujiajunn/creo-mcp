@@ -3,6 +3,9 @@ name = "creo-mcp"
 version = "0.16.0"
 description = "A standard MCP bridge for PTC Creo through its official VB API"
 readme = "README.md"
+# PEP 639：用 SPDX 字符串 + license-files，不再用已废弃的 License 分类符。
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 keywords = ["creo", "mcp", "cad", "parametric", "vb-api", "ptc"]
 classifiers = [
