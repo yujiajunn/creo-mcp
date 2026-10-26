@@ -165,8 +165,8 @@ CAPABILITY_BOUNDARIES: dict[str, Any] = {
     },
     "model_tree": {
         "editable": [
-            "named driving dimensions, typed parameters and semantic model-item names via "
-            "creo_update_model_metadata",
+            ("named driving dimensions, typed parameters and semantic model-item names via "
+            "creo_update_model_metadata"),
             "model-tree suppression via creo_update_feature_suppression",
         ],
         "unsupported": [
@@ -1685,7 +1685,7 @@ def main() -> None:
             payload = json.loads(sys.argv[4])
         except json.JSONDecodeError as exc:
             print(json.dumps({"ok": False, "error": f"Invalid operation payload: {exc}"}))
-            raise SystemExit(1)
+            raise SystemExit(1) from exc
         raise SystemExit(_run_operation(sys.argv[2], payload))
 
     transport = _flag_value(argv, "--transport") or "stdio"
@@ -1699,9 +1699,9 @@ def main() -> None:
     raw_port = _flag_value(argv, "--port")
     try:
         port = int(raw_port) if raw_port is not None else 8000
-    except ValueError:
+    except ValueError as exc:
         print(f"Invalid --port {raw_port!r}; expected an integer.", file=sys.stderr)
-        raise SystemExit(2)
+        raise SystemExit(2) from exc
 
     try:
         create_server(host=host, port=port).run(transport=transport)

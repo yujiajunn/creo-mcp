@@ -201,12 +201,12 @@ def call(
     for attempt in (0, 1):
         try:
             conn = _connect(address)
-        except (OSError, FileNotFoundError):
+        except (OSError, FileNotFoundError) as exc:
             if attempt:
                 raise BrokerError(
                     "The Creo MCP broker is unavailable. Check the broker log at "
                     f"{log_path()}."
-                )
+                ) from exc
             ensure_broker()
             continue
 

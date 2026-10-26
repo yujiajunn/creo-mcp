@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from creo_mcp.concept_geometry import _write_colored_concept_step
 from creo_mcp.errors import CreoMcpError
 from creo_mcp.geometry_dsl import BuildGeometryRequest, build_geometry_program
@@ -122,9 +124,9 @@ class GeometryDslTests(unittest.TestCase):
             "confirmation": "build_geometry",
         }
         BuildGeometryRequest.model_validate(base)
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValidationError):
             BuildGeometryRequest.model_validate({**base, "confirmation": "yes"})
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValidationError):
             BuildGeometryRequest.model_validate({**base, "part_name": "9bad name"})
 
 

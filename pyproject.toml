@@ -56,10 +56,27 @@ target-version = "py311"
 
 # 显式规则集：无配置文件时 ruff 的隐式选集随版本漂移（0.17 会额外启用 BLE001/SIM/S
 # 等，导致同一份代码在不同 runner 上报出不同数量的错），CI 门禁必须钉死。
-# 当前命中 0；已知的 71 条历史欠债（BLE001 49、S110 10、SIM117 7、B017/S112/ISC004）
-# 留待单独一轮人工清理后再逐步纳入，不在此门禁内静默放行。
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I", "UP"]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "BLE"]
+
+# BLE001（宽 catch）只在"降级即契约"的模块逐文件豁免：COM/子进程边界抛的是异常杂集
+# （com_error、晚期绑定的 AttributeError、OSError…），收窄会把干净的 CreoMcpError
+# 变成裸栈；渲染与日志写入失败必须退回裸结果而不是打断调用方。新模块默认受检。
+[tool.ruff.lint.per-file-ignores]
+"creo_mcp/bridge.py" = ["BLE001", "B905"]
+"creo_mcp/server.py" = ["BLE001"]
+"creo_mcp/broker.py" = ["BLE001"]
+"creo_mcp/preview_render.py" = ["BLE001"]
+"creo_mcp/observability.py" = ["BLE001"]
+"creo_mcp/clearance_geometry.py" = ["BLE001", "B905"]
+"creo_mcp/cavity_segments.py" = ["B905"]
+"tests/test_cavity_segments.py" = ["B905"]
+
+# 未纳入门禁的家族（不是静默放行，是具名欠债，下一轮按数清理）：
+#   B905 zip 缺 strict=     8 处 —— 需要逐处确认是否等长前提，改 strict=True 会变语义
+#   SIM105 可用 suppress    18 处、SIM117 嵌套 with  7 处（多在测试）
+#   S110 try/except/pass    10 处、S112 .../continue 2 处（清理路径的有意吞异常）
+# 全部由 ruff check --select B905,SIM,S 复现。
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
