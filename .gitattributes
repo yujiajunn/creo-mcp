@@ -1,0 +1,25 @@
+# 统一行尾：仓库内一律存 LF；检出时交给 core.autocrlf 处理，避免每次 add 都刷
+# "LF will be replaced by CRLF" 警告，也避免跨机器产生纯行尾 diff。
+* text=auto
+
+# 跨平台读取的脚本与数据：检出也保持 LF
+*.py    text eol=lf
+*.sh    text eol=lf
+*.toml  text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# 文档：仓库内 LF，检出按平台
+*.md    text
+
+# 二进制：禁止任何行尾转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.pdf   binary
+*.prt   binary
+*.asm   binary
+*.winch binary
+*.gph   binary
