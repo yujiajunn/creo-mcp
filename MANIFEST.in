@@ -1,0 +1,4 @@
+# 让 sdist 与 wheel 带上一致的文档资产（package-data 只管安装，不管打包源清单）。
+include README.md
+include pyproject.toml
+recursive-include creo_mcp/docs *.md

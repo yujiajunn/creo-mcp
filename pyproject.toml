@@ -4,6 +4,16 @@ version = "0.16.0"
 description = "A standard MCP bridge for PTC Creo through its official VB API"
 readme = "README.md"
 requires-python = ">=3.11"
+keywords = ["creo", "mcp", "cad", "parametric", "vb-api", "ptc"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Win32 (MS Windows)",
+  "Intended Audience :: Manufacturing",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Computer-Aided Design (CAD)",
+]
 dependencies = [
   "mcp>=1.30,<2",
   "pywin32>=308; sys_platform == 'win32'",
@@ -17,6 +27,7 @@ concept-geometry = [
 dev = [
   "pytest>=8",
   "ruff>=0.6",
+  "build>=1.2",
 ]
 
 [build-system]
@@ -26,12 +37,24 @@ build-backend = "setuptools.build_meta"
 [project.scripts]
 creo-mcp = "creo_mcp.server:main"
 
+[project.urls]
+Homepage = "https://github.com/yujiajunn/creo-mcp"
+Repository = "https://github.com/yujiajunn/creo-mcp"
+Issues = "https://github.com/yujiajunn/creo-mcp/issues"
+
 [tool.setuptools.package-data]
 creo_mcp = ["docs/*.md"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+# 显式规则集：无配置文件时 ruff 的隐式选集随版本漂移（0.17 会额外启用 BLE001/SIM/S
+# 等，导致同一份代码在不同 runner 上报出不同数量的错），CI 门禁必须钉死。
+# 当前命中 0；已知的 71 条历史欠债（BLE001 49、S110 10、SIM117 7、B017/S112/ISC004）
+# 留待单独一轮人工清理后再逐步纳入，不在此门禁内静默放行。
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

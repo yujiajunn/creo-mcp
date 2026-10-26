@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint, test, build (Windows)
+    # 目标产品只跑在 Windows + Creo 上；runner 用同平台，避免测出一个不会部署的配置。
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install (dev + concept-geometry extras)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,concept-geometry]"
+
+      - name: Ruff
+        run: python -m ruff check .
+
+      # 离线套件不连 Creo：win32com 全部是函数内延迟 import，测试用 fake session。
+      - name: Pytest
+        run: python -m pytest -q
+
+      # --doctor 本身不连 Creo（不加 --probe）；在 runner 上必然报缺 Creo，
+      # 所以只断言它能出报告、且不会把非 ASCII 提示写成乱码。
+      - name: CLI smoke (catalog + doctor report shape)
+        shell: python
+        run: |
+          import subprocess, sys
+          for args in (["--list"], ["--doctor"]):
+              r = subprocess.run([sys.executable, "-m", "creo_mcp.server", *args],
+                                 capture_output=True, text=False)
+              out = r.stdout.decode("utf-8")  # 乱码会在这里抛 UnicodeDecodeError
+              assert out.strip(), f"{args} produced no output"
+              print(f"{args}: exit={r.returncode} utf8-ok chars={len(out)}")
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      # wheel 必须在仓库之外、干净环境里跑起来：仓库根的 creo_mcp_server.py 是开发用的
+      # shim，安装态下不存在，worker 命令要能回退到 python -m creo_mcp.server。
+      - name: Install the wheel in a clean venv and run it outside the repo
+        shell: pwsh
+        run: |
+          $whl = (Get-ChildItem (Join-Path $PWD 'dist\*.whl'))[0].FullName
+          $venv = Join-Path $env:RUNNER_TEMP 'ciwheel'
+          python -m venv $venv
+          & (Join-Path $venv 'Scripts\python.exe') -m pip install --quiet ($whl + '[concept-geometry]')
+          Set-Location $env:RUNNER_TEMP
+          & (Join-Path $venv 'Scripts\creo-mcp.exe') --list | Select-Object -First 2
+          & (Join-Path $venv 'Scripts\python.exe') -c "from creo_mcp import server; import pathlib; assert not server._probe_script_path().exists(), 'shim must be absent when installed'; print('worker fallback:', server._worker_command('--probe-status')[1:])"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: gh release create "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz --generate-notes
