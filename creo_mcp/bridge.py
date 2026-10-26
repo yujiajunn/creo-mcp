@@ -29,6 +29,7 @@ from .geometry_dsl import (
 )
 from .models import (
     AppliedDimensionUpdate,
+    AppliedFeatureSuppression,
     AppliedModelItemRename,
     AppliedParameterUpdate,
     BoxDimensions,
@@ -79,6 +80,8 @@ from .models import (
     SaveModelAsResult,
     SurfaceGeometryInfo,
     UdfQualificationRunResult,
+    UpdateFeatureSuppressionRequest,
+    UpdateFeatureSuppressionResult,
     UpdateModelMetadataRequest,
     UpdateModelMetadataResult,
 )
@@ -125,6 +128,20 @@ FEATURE_STATUS_NAMES = {
     5: "suppressed",
     6: "unregenerated",
 }
+# Status 5 is a model-tree suppression, which is what this tool controls. Statuses
+# 2, 3, and 4 are held down by a family table, a simplified representation, or the
+# model program, so toggling them through the feature object fights whichever
+# mechanism owns them and is refused outright.
+SUPPRESSED_FEATURE_STATUS = 5
+DRIVEN_SUPPRESSION_STATUSES = frozenset({2, 3, 4})
+ANY_SUPPRESSED_STATUSES = frozenset({2, 3, 4, 5})
+# The pfcls type library names for feature suppression differ between Creo
+# releases, and the exact spelling is only provable against a live session. Each
+# candidate is probed in order; if none exists the call fails before any feature
+# is touched and reports the members Creo actually exposed, so this list is
+# corrected from that report instead of from a guess.
+FEATURE_SUPPRESS_MEMBERS = ("Suppress", "SuppressFeature")
+FEATURE_RESUME_MEMBERS = ("Resume", "ResumeFeature")
 PARAMETER_VALUE_TYPES = {
     0: ("string", "StringValue"),
     1: ("integer", "IntValue"),
@@ -2233,6 +2250,176 @@ def update_model_metadata(request: UpdateModelMetadataRequest) -> UpdateModelMet
             renames=applied_renames,
             dimensions=applied_dimensions,
             parameters=applied_parameters,
+            regenerated=True,
+            saved=False,
+        )
+
+
+def _suppression_member(feature: Any, suppress: bool) -> Any:
+    """Return the feature's bound suppress or resume method."""
+    candidates = FEATURE_SUPPRESS_MEMBERS if suppress else FEATURE_RESUME_MEMBERS
+    for member in candidates:
+        try:
+            bound = getattr(feature, member)
+        except Exception:
+            continue
+        if callable(bound):
+            return bound
+    try:
+        exposed = sorted(name for name in dir(feature) if not name.startswith("_"))
+    except Exception:
+        exposed = []
+    raise CreoMcpError(
+        f"Creo exposed no feature {'suppression' if suppress else 'resume'} method. "
+        f"Probed {list(candidates)}; members Creo reported: "
+        f"{exposed[:60] or 'unreadable'}. Record this in "
+        "creo_mcp/docs/LIVE_VALIDATION.zh-CN.md and extend the probe list there before "
+        "relying on this tool."
+    )
+
+
+def update_feature_suppression(
+    request: UpdateFeatureSuppressionRequest,
+) -> UpdateFeatureSuppressionResult:
+    """Suppress or resume resolved features, then regenerate without saving."""
+    with _connected_session() as (session, _):
+        model = _get_loaded_model(session, request.model_name, request.model_kind)
+        model_info = _model_info(model)
+        if model_info is None:
+            raise CreoMcpError("Creo returned no metadata for the suppression target.")
+
+        raw_features, truncated = _bounded_sequence(
+            model.ListItems(CREO_FEATURE_ITEM_TYPE), 100000
+        )
+        if truncated:
+            raise CreoMcpError(
+                "The model tree holds more features than this tool resolves by name. "
+                "Target features by item_id from creo_get_model_structure instead."
+            )
+        features_by_id = {int(item.Id): item for item in raw_features}
+        available_names = sorted(
+            name for name in (_optional_name(item) for item in raw_features) if name
+        )
+
+        targets: list[dict[str, Any]] = []
+        for update in request.updates:
+            if update.item_id is not None:
+                feature = features_by_id.get(update.item_id)
+                if feature is None:
+                    raise CreoMcpError(
+                        f"Feature ID {update.item_id} is not in the model tree of "
+                        f"{model_info.file_name}. Use creo_get_model_structure to list "
+                        "current feature IDs."
+                    )
+            else:
+                wanted = str(update.feature_name).casefold()
+                matches = [
+                    item
+                    for item in raw_features
+                    if (_optional_name(item) or "").casefold() == wanted
+                ]
+                if not matches:
+                    raise CreoMcpError(
+                        f"No feature named {update.feature_name!r} in "
+                        f"{model_info.file_name}. Available feature names: "
+                        f"{available_names[:40]}"
+                    )
+                if len(matches) > 1:
+                    raise CreoMcpError(
+                        f"Feature name {update.feature_name!r} matches several features "
+                        f"with IDs {sorted(int(item.Id) for item in matches)}. Target it "
+                        "by item_id instead."
+                    )
+                feature = matches[0]
+
+            item_id = int(feature.Id)
+            status = _optional_int(feature, "Status")
+            if status is None:
+                raise CreoMcpError(
+                    f"Creo reported no status for feature {item_id}, so its suppression "
+                    "state cannot be verified. Refusing to change it."
+                )
+            status_name = FEATURE_STATUS_NAMES.get(status)
+            if status in DRIVEN_SUPPRESSION_STATUSES:
+                raise CreoMcpError(
+                    f"Feature {_optional_name(feature) or item_id} is {status_name!r}; "
+                    "that state is owned by a family table, a simplified representation, "
+                    "or the model program. Model-tree suppression would be undone by the "
+                    "next regeneration, so it is refused."
+                )
+            already_there = (
+                status == SUPPRESSED_FEATURE_STATUS
+                if update.suppressed
+                else status not in ANY_SUPPRESSED_STATUSES
+            )
+            method = None
+            if not already_there:
+                method = _suppression_member(feature, update.suppressed)
+            targets.append(
+                {
+                    "method": method,
+                    "item_id": item_id,
+                    "name": _optional_name(feature),
+                    "feature_type_name": _optional_string(feature, "FeatTypeName"),
+                    "requested": update.suppressed,
+                    "previous_status": status,
+                    "previous_status_name": status_name,
+                }
+            )
+
+        try:
+            for target in targets:
+                if target["method"] is not None:
+                    target["method"]()
+            model.Regenerate(None)
+            _repaint_model_if_current(session, model)
+        except Exception as exc:
+            raise CreoMcpError(
+                "Creo could not complete the feature suppression change. Some in-memory "
+                "suppressions may already be applied; inspect the model tree before "
+                f"continuing. {exc}"
+            ) from exc
+
+        raw_after, _ = _bounded_sequence(model.ListItems(CREO_FEATURE_ITEM_TYPE), 100000)
+        features_after = {int(item.Id): item for item in raw_after}
+        applied: list[AppliedFeatureSuppression] = []
+        unconfirmed: list[str] = []
+        for target in targets:
+            current = features_after.get(target["item_id"])
+            resulting = _optional_int(current, "Status") if current is not None else None
+            resulting_name = (
+                FEATURE_STATUS_NAMES.get(resulting) if resulting is not None else None
+            )
+            if target["requested"]:
+                satisfied = resulting in ANY_SUPPRESSED_STATUSES
+            else:
+                satisfied = resulting is not None and resulting not in ANY_SUPPRESSED_STATUSES
+            if not satisfied:
+                unconfirmed.append(
+                    f"{target['name'] or target['item_id']} requested "
+                    f"suppressed={target['requested']} but reads {resulting_name!r}"
+                )
+            applied.append(
+                AppliedFeatureSuppression(
+                    item_id=target["item_id"],
+                    name=target["name"],
+                    feature_type_name=target["feature_type_name"],
+                    requested_suppressed=target["requested"],
+                    previous_status_name=target["previous_status_name"],
+                    resulting_status_name=resulting_name,
+                    changed=target["previous_status"] != resulting,
+                )
+            )
+        if unconfirmed:
+            raise CreoMcpError(
+                "Creo did not report the requested suppression states after "
+                f"regeneration: {unconfirmed}. The model was regenerated and left "
+                "unsaved; inspect it with creo_get_model_structure before continuing."
+            )
+
+        return UpdateFeatureSuppressionResult(
+            model=model_info,
+            features=applied,
             regenerated=True,
             saved=False,
         )

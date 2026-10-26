@@ -44,6 +44,14 @@ def pipe_name() -> str:
 
 
 def runtime_dir() -> Path:
+    """Return the per-user runtime directory for broker state and logs.
+
+    ``CREO_MCP_RUNTIME_DIR`` overrides it so test runs and side-by-side
+    instances never write into the production ``CreoMCP`` directory tree.
+    """
+    configured = os.environ.get("CREO_MCP_RUNTIME_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve(strict=False)
     base = os.environ.get("LOCALAPPDATA")
     root = Path(base) if base else Path.home() / ".local" / "share"
     return root / "CreoMCP"

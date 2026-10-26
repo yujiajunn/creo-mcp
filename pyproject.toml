@@ -1,6 +1,6 @@
 [project]
 name = "creo-mcp"
-version = "0.14.0"
+version = "0.16.0"
 description = "A standard MCP bridge for PTC Creo through its official VB API"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,6 +13,10 @@ dependencies = [
 [project.optional-dependencies]
 concept-geometry = [
   "cadquery-ocp-novtk>=7.9.3.1,<7.9.4",
+]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
 ]
 
 [build-system]

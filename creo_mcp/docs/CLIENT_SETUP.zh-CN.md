@@ -9,7 +9,7 @@ nanobot、Codex、Claude Desktop、Claude Code、Cursor 和 VS Code 中接入。
 
 - 使用标准 MCP `stdio` 传输，客户端以子进程方式启动服务器，不需要监听端口。
 - 使用官方 MCP Python SDK 的 `FastMCP` 实现初始化、工具和资源协议。
-- 对外提供服务器名称、版本、用途说明、27 个工具以及 5 个中文文档资源。
+- 对外提供服务器名称、版本、用途说明、30 个工具以及 5 个中文文档资源。
 - `creo_build_geometry` 提供受约束的 JSON 几何程序（box/cylinder/sphere 图元 +
   union/difference/intersect 布尔 + mirror + linear_pattern + transform（绕轴旋转、
   平移）+ source（把已有毫米 STEP 实体作为布尔操作数直接参与运算），毫米单位）：
@@ -263,8 +263,21 @@ Creo 工具。工作区配置可以提交给团队，但绝对路径需要统一
 
 ## 标准协议检查
 
-本仓库的单元测试验证服务器身份、31 个工具、Schema、注解和 5 个 Resources。还可以用
-MCP Inspector 做与具体客户端无关的协议检查。以下命令需要本机 Node.js/npm：
+本仓库的测试验证服务器身份、30 个工具、Schema、注解、7 个 Resources，以及工具面
+契约（命名、描述预算、确认令牌、交叉引用、`tools/list` 载荷预算）。无需 Node.js
+即可自检：
+
+```powershell
+<repo>\.venv\Scripts\creo-mcp.exe --list
+<repo>\.venv\Scripts\creo-mcp.exe --list-json
+<repo>\.venv\Scripts\creo-mcp.exe --doctor
+<repo>\.venv\Scripts\creo-mcp.exe --doctor --probe
+```
+
+`--doctor` 只读本机信息（注册表 loadpoint、`pfcls` COM 注册、`xtop.exe` 进程、日志目录
+可写、broker 状态）；加 `--probe` 才会真正连接 Creo。每个 warn/fail 都带中文修复建议。
+
+还可以用 MCP Inspector 做与具体客户端无关的协议检查。以下命令需要本机 Node.js/npm：
 
 ```powershell
 npx -y @modelcontextprotocol/inspector --cli `
@@ -300,7 +313,8 @@ npx -y @modelcontextprotocol/inspector --cli `
 
 - 将 Python 环境和启动器固定版本，形成内部安装脚本或签名安装包。
 - 为 Claude Desktop 等客户端封装 MCP Bundle/桌面扩展。
-- 如果要跨机器、多用户共享，新增 Streamable HTTP 服务、身份认证、授权和主机调度。
+- 如果要跨机器、多用户共享，服务端已支持 Streamable HTTP 传输（`--transport streamable-http --host --port`），
+  但仍需自行补齐身份认证、授权和主机调度。
 - Skill 与 MCP 分开分发：MCP 提供通用 Creo 能力，Skill 提供针管、吸塑盒和企业工程规则。
 
 ## 后续按需优化
@@ -312,7 +326,7 @@ npx -y @modelcontextprotocol/inspector --cli `
 - 将 `operation_id` 直接带入每个 MCP 工具结果，并增加日志轮转、筛选和跳转能力。
 - 增加自动化特征组的查找、修改和替换，使重复运行具备更强幂等性。
 - 建立版本化安装包、升级/回滚说明和客户端兼容性测试矩阵。
-- 需求出现后再评估远程 Streamable HTTP、OAuth、队列和多 Creo 会话调度。
+- 需求出现后再评估跨机器的 Streamable HTTP 认证/多会话调度、OAuth 和队列（传输本身已可用）。
 
 已验证与未验证能力的唯一事实来源是
 [`LIVE_VALIDATION.zh-CN.md`](LIVE_VALIDATION.zh-CN.md)；工程交付门槛见

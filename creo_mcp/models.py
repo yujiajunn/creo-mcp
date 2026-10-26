@@ -135,6 +135,12 @@ class CreatePartRequest(BaseModel):
         default=True,
         description="Whether to open and activate the new part window.",
     )
+    confirmation: Literal["create_empty_part"] = Field(
+        description=(
+            "Explicit acknowledgement that this operation changes Creo session state by "
+            "creating and activating a new unsaved part."
+        )
+    )
 
 
 class CreatePartResult(BaseModel):
@@ -367,8 +373,21 @@ class ProductClearanceTrayPlan(BaseModel):
     bottom_thickness_mm: float
     flange_thickness_mm: float
     flange_width_mm: float
-    static_outside_volume_mm3: float = Field(ge=0)
-    insertion_sweep_outside_volume_mm3: float = Field(ge=0)
+    static_outside_volume_mm3: float = Field(
+        ge=0,
+        description=(
+            "Violation metric, not a body volume: volume of product material left outside "
+            "the cavity envelope. 0.0 (within tolerance) proves complete containment; any "
+            "excess aborts the plan."
+        ),
+    )
+    insertion_sweep_outside_volume_mm3: float = Field(
+        ge=0,
+        description=(
+            "Violation metric: volume of product material outside the straight +Z insertion "
+            "sweep probe. 0.0 means the tray can be drawn straight up."
+        ),
+    )
     insertion_path_verified: bool
     cavity_geometry_mode: Literal["hard_edge_component_rectilinear_directional_sweep"]
     geometry_source_mode: Literal["conservative_brep_component_rectilinear_depth_envelope"]
@@ -1238,6 +1257,84 @@ class AppliedDimensionUpdate(DimensionUpdate):
 
 class AppliedParameterUpdate(ParameterUpdate):
     created: bool
+
+
+class FeatureSuppressionUpdate(BaseModel):
+    """Select one loaded feature and the suppression state to move it to."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feature_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=31,
+        description=(
+            "Model-tree feature name, matched case-insensitively. Prefer names for copied "
+            "templates; feature IDs differ per model file."
+        ),
+    )
+    item_id: int | None = Field(
+        default=None,
+        ge=0,
+        description="Stable feature ID from creo_get_model_structure for this session.",
+    )
+    suppressed: bool
+
+    @model_validator(mode="after")
+    def validate_single_target(self) -> "FeatureSuppressionUpdate":
+        if (self.feature_name is None) == (self.item_id is None):
+            raise ValueError(
+                "Provide exactly one of feature_name or item_id per suppression update."
+            )
+        return self
+
+
+class UpdateFeatureSuppressionRequest(InspectModelGeometryRequest):
+    """Confirmed suppress or resume of one or more features in one loaded model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    updates: list[FeatureSuppressionUpdate] = Field(min_length=1, max_length=64)
+    confirmation: Literal["update_feature_suppression"]
+
+    @model_validator(mode="after")
+    def validate_unique_targets(self) -> "UpdateFeatureSuppressionRequest":
+        keys = [
+            (
+                item.feature_name.casefold()
+                if item.feature_name is not None
+                else f"id:{item.item_id}"
+            )
+            for item in self.updates
+        ]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Suppression update targets must be unique.")
+        return self
+
+
+class AppliedFeatureSuppression(BaseModel):
+    """One suppression outcome read back from Creo after regeneration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: int
+    name: str | None
+    feature_type_name: str | None
+    requested_suppressed: bool
+    previous_status_name: str | None
+    resulting_status_name: str | None
+    changed: bool
+
+
+class UpdateFeatureSuppressionResult(BaseModel):
+    """Verified suppress or resume result, observed after regeneration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: CreoModelInfo
+    features: list[AppliedFeatureSuppression]
+    regenerated: Literal[True]
+    saved: Literal[False]
 
 
 class UpdateModelMetadataResult(BaseModel):

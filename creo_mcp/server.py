@@ -40,6 +40,7 @@ from .bridge import (
     place_udf,
     run_udf_qualification,
     save_model_as,
+    update_feature_suppression,
     update_model_metadata,
 )
 from .errors import CreoMcpError
@@ -90,6 +91,8 @@ from .models import (
     StepFileInfo,
     UdfManifestValidationResult,
     UdfQualificationRunResult,
+    UpdateFeatureSuppressionRequest,
+    UpdateFeatureSuppressionResult,
     UpdateModelMetadataRequest,
     UpdateModelMetadataResult,
     ValidateUdfManifestRequest,
@@ -128,6 +131,76 @@ MODEL_EDIT_ANNOTATIONS = ToolAnnotations(
     idempotentHint=True,
     openWorldHint=False,
 )
+
+# Capability boundaries the caller must respect. Kept as data (not prose in a
+# prompt) so the model can query them exactly like the ZW3D MCP capabilities
+# meta tool, and so they stay testable. Every entry mirrors docs/ARCHITECTURE.md.
+CAPABILITY_BOUNDARIES: dict[str, Any] = {
+    "bridge": {
+        "api": "official PTC Creo VB API over the pfcls COM type library",
+        "session": "one interactive Creo session per Windows desktop user",
+        "concurrency": "never call two tools concurrently; operations are serialized by the server",
+        "default_state": "edits stay unsaved; opening, importing, editing, saving and exporting are separate permissions",
+    },
+    "feature_creation": {
+        "supported": [
+            "parameterized UDF placement via creo_place_qualified_udf after creo_validate_udf_manifest",
+            "solid bodies from a constrained JSON geometry program via creo_build_geometry",
+            (
+                "native parametric parts by copying a validated Creo template and driving its "
+                "named dimensions (proven in Creo 13.4 by creo_create_packaging_box)"
+            ),
+        ],
+        "unsupported": [
+            (
+                "IpfcSolid.CreateFeature for ordinary extrude/revolve: the Creo 13.4 VB API "
+                "type library exposes no public instruction factories for those features"
+            ),
+            (
+                "raw .gph placement without a qualified manifest (Creo would prompt interactively "
+                "and break the automation contract)"
+            ),
+        ],
+        "rule": "general feature creation must go through a qualified UDF manifest; do not promise "
+        "native sketch-based extrude/revolve until a qualified asset exists",
+    },
+    "model_tree": {
+        "editable": [
+            "named driving dimensions, typed parameters and semantic model-item names via "
+            "creo_update_model_metadata",
+            "model-tree suppression via creo_update_feature_suppression",
+        ],
+        "unsupported": [
+            (
+                "family table, simplified representation, and program-driven suppression states: "
+                "that mechanism owns them, and creo_update_feature_suppression refuses such features"
+            ),
+        ],
+        "rule": "suppression is only confirmed when each feature status is read back after regeneration",
+    },
+    "cad_input": {
+        "auto_detected": ["step", "iges", "parasolid", "acis", "stl", "jt", "catia", "solidworks",
+                          "inventor", "vda", "creo_neutral"],
+        "ambiguous": {
+            ".prt": "native Creo part or NX part; never auto-detect. Use creo_open_native_model for "
+                    "native and creo_import_cad with source_format='nx' for NX",
+        },
+        "mesh_caveat": "mesh and tessellated inputs import as reference geometry; they are not "
+        "editable B-rep solids",
+    },
+    "units": {
+        "length": "millimetres after normalization; native reported unit is preserved in results",
+        "angles": "degrees",
+        "rule": "unit conversion happens once, in the bridge, and is reported on every geometry result",
+    },
+    "verification": {
+        "after_edit": ["regenerate the model", "re-measure the envelope and volume",
+                       "confirm the returned feature names and geometry before claiming success"],
+        "never": ["implicitly overwrite, delete, purge or replace an existing model",
+                  "save or export merely because a model was opened or created"],
+    },
+}
+
 
 def _documentation_text(name: str) -> str:
     """Read one bundled Markdown document from the installed package."""
@@ -214,6 +287,20 @@ _persistent_worker_stderr: list[str] = []
 
 def _probe_script_path() -> Path:
     return Path(__file__).resolve().parents[1] / "creo_mcp_server.py"
+
+
+def _worker_command(*args: str) -> list[str]:
+    """Build the command that re-enters this server in worker mode.
+
+    The repository shim (``creo_mcp_server.py``) is used when it exists so a
+    local checkout keeps its exact import behaviour. A wheel installation has no
+    shim next to the package, so fall back to the module entry point instead of
+    spawning a process that cannot be found.
+    """
+    script = _probe_script_path()
+    if script.is_file():
+        return [sys.executable, str(script), *args]
+    return [sys.executable, "-m", "creo_mcp.server", *args]
 
 
 def _ensure_worker_circuit_closed() -> None:
@@ -372,6 +459,10 @@ def _execute_operation(
         return place_udf(PlaceUdfRequest.model_validate(payload))
     if operation == "qualify_udf":
         return run_udf_qualification(RunUdfQualificationRequest.model_validate(payload))
+    if operation == "update_feature_suppression":
+        return update_feature_suppression(
+            UpdateFeatureSuppressionRequest.model_validate(payload)
+        )
     if operation == "update_model_metadata":
         return update_model_metadata(UpdateModelMetadataRequest.model_validate(payload))
     if operation == "handoff_report":
@@ -417,7 +508,27 @@ def _operation_response(
 
 
 def _run_operation(operation: str, payload: dict[str, Any]) -> int:
-    """Run one isolated operation and emit one JSON result line for the parent process."""
+    """Run one operation and emit one JSON result line for the parent process.
+
+    A running broker owns the only usable VB API connection, so when one is
+    alive the request is routed through it exactly like an MCP tool call.
+    Opening a second direct connection fails with a busy error, which previously
+    made this documented diagnostic path unusable whenever the broker was up.
+    Direct in-process execution is kept for the standalone single-shot case.
+    """
+    if broker.ping() is not None:
+        try:
+            response = _call_creo(
+                {"kind": "operation", "operation": operation, "payload": payload},
+                timeout_seconds=OPERATION_TIMEOUT_SECONDS,
+            )
+        except CreoMcpError as exc:
+            response = {"ok": False, "error": str(exc)}
+        # The broker runs the same _operation_response as the direct path, so the
+        # operation_id and audit-log location documented in README survive here too.
+        print(json.dumps({"via": "broker", **response}, ensure_ascii=False))
+        return 0 if response.get("ok") else 1
+
     response = _operation_response(operation, payload)
     print(json.dumps(response))
     return 0 if response["ok"] else 1
@@ -488,7 +599,7 @@ def _start_persistent_worker() -> tuple[subprocess.Popen[str], queue.Queue[str |
     global _persistent_worker, _persistent_worker_responses
 
     process = subprocess.Popen(
-        [sys.executable, str(_probe_script_path()), "--persistent-worker"],
+        _worker_command("--persistent-worker"),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -740,7 +851,7 @@ async def _run_isolated_operation_with_progress(
     return await _await_with_progress(task, frames, ctx)
 
 
-def create_server() -> FastMCP:
+def create_server(host: str = "127.0.0.1", port: int = 8000) -> FastMCP:
     """Create an MCP server with stable, portable tool names and JSON schemas."""
     server = FastMCP(
         SERVER_NAME,
@@ -757,6 +868,8 @@ def create_server() -> FastMCP:
             "automatically and do not use shell commands to wait for or manage MCP processes; "
             "report the recovery guidance to the user."
         ),
+        host=host,
+        port=port,
     )
     # FastMCP does not currently expose its low-level server version argument.
     server._mcp_server.version = SERVER_VERSION
@@ -1083,8 +1196,8 @@ def create_server() -> FastMCP:
         title="Create Empty Creo Part",
         description=(
             "Create and optionally activate a new unsaved Creo part. It does not modify "
-            "the current model and never saves a file. The MCP client should request user "
-            "approval before invoking this write operation."
+            "the current model and never saves a file. Requires "
+            "confirmation='create_empty_part' because it changes Creo session state."
         ),
         annotations=WRITE_ANNOTATIONS,
         structured_output=True,
@@ -1114,6 +1227,31 @@ def create_server() -> FastMCP:
         """Apply maintainability metadata and parameters, regenerate, and leave unsaved."""
         return UpdateModelMetadataResult.model_validate(
             _run_isolated_operation("update_model_metadata", request.model_dump())
+        )
+
+    @server.tool(
+        name="creo_update_feature_suppression",
+        title="Suppress Or Resume Creo Features",
+        description=(
+            "Suppress or resume model-tree features in the active or a named loaded model. "
+            "Target each feature by name (case-insensitive; preferred for copied templates) "
+            "or by a stable item_id from creo_get_model_structure. Every target resolves "
+            "before anything is touched: unknown, ambiguous, or status-less features fail "
+            "the call, and features held suppressed by a family table, simplified "
+            "representation, or the model program are refused. Applied changes regenerate "
+            "the model, then each status is read back and a mismatch is reported as an "
+            "error. Features already in the requested state are reported unchanged without "
+            "a Creo call. Never saves. Requires confirmation='update_feature_suppression'."
+        ),
+        annotations=MODEL_EDIT_ANNOTATIONS,
+        structured_output=True,
+    )
+    def creo_update_feature_suppression(
+        request: UpdateFeatureSuppressionRequest,
+    ) -> UpdateFeatureSuppressionResult:
+        """Suppress or resume resolved features, regenerate, and verify each status."""
+        return UpdateFeatureSuppressionResult.model_validate(
+            _run_isolated_operation("update_feature_suppression", request.model_dump())
         )
 
     @server.tool(
@@ -1351,11 +1489,165 @@ def create_server() -> FastMCP:
             return await asyncio.to_thread(_with_preview, result)
         return result
 
+    # ── Meta tools and machine-readable resources ────────────────────
+    # Mirrors the discovery pattern proven by the ZW3D MCP server: a compact
+    # in-band catalog plus explicit capability boundaries, so a caller can learn
+    # the tool surface without paying for a large tools/list payload every turn.
+
+    @server.tool(
+        name="creo_tool_catalog",
+        title="List Creo MCP Tools",
+        description=(
+            "List every Creo MCP tool grouped by capability, with title, read/write group, and "
+            "parameter count. Use this to discover available operations or to confirm a tool name "
+            "before writing a workflow. Set include_schema=true only when full input schemas are "
+            "needed. Returns a compact JSON object and never changes Creo."
+        ),
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    async def creo_tool_catalog(include_schema: bool = False) -> dict[str, Any]:
+        """Return the compact tool catalog for this server."""
+        from .catalog import build_catalog, render_json
+
+        catalog = await build_catalog(server)
+        return render_json(catalog, include_schema=include_schema)
+
+    @server.tool(
+        name="creo_get_capabilities",
+        title="Get Creo Capability Boundaries",
+        description=(
+            "Return the hard capability boundaries of this Creo bridge: which general feature "
+            "creation paths the official Creo VB API does not expose, which CAD inputs are "
+            "ambiguous, how units are normalized, and what must be verified after an edit. Read "
+            "this before promising a modeling operation that may be unsupported. Never changes Creo."
+        ),
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    def creo_get_capabilities() -> dict[str, Any]:
+        """Return documented capability boundaries as structured data."""
+        return CAPABILITY_BOUNDARIES
+
+    @server.resource(
+        "creo://server/status",
+        name="creo_server_status",
+        title="Creo MCP 服务器状态",
+        description="服务器版本、工具面统计与本机预检结果（只读，不修改 Creo）。",
+        mime_type="application/json",
+    )
+    async def creo_server_status_resource() -> str:
+        from .diagnostics import run_doctor
+
+        report = await asyncio.to_thread(lambda: run_doctor(probe_creo=False))
+        payload = {
+            "server": SERVER_NAME,
+            "version": SERVER_VERSION,
+            "tool_count": len(await server.list_tools()),
+            "resource_count": len(await server.list_resources()),
+            "preflight": report.to_dict(),
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    @server.resource(
+        "creo://tools/catalog",
+        name="creo_tool_catalog_resource",
+        title="Creo MCP 工具目录",
+        description="全部工具的 JSON 目录（按能力分组，只读）。",
+        mime_type="application/json",
+    )
+    async def creo_tools_catalog_resource() -> str:
+        from .catalog import build_catalog, render_json
+
+        catalog = await build_catalog(server)
+        return json.dumps(render_json(catalog), ensure_ascii=False, indent=2)
+
     return server
 
 
+def _tool_catalog_for_cli(*, as_json: bool, include_schema: bool) -> int:
+    """Print the tool catalog without starting a transport (maintainer surface)."""
+    from .catalog import build_catalog, find_issues, render_json, render_text
+
+    async def _build():
+        return await build_catalog(create_server())
+
+    catalog = asyncio.run(_build())
+    if as_json:
+        print(
+            json.dumps(
+                render_json(catalog, include_schema=include_schema),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        print(render_text(catalog, include_schema=include_schema))
+        issues = find_issues(catalog)
+        if issues:
+            print(f"\nConvention findings: {len(issues)}")
+            for issue in issues[:20]:
+                print(f"  - {issue}")
+    return 0
+
+
+def _doctor_for_cli(*, probe: bool, as_json: bool) -> int:
+    """Run the local preflight checks and print an actionable report."""
+    from .diagnostics import STATUS_FAIL, run_doctor
+
+    report = run_doctor(probe_creo=probe)
+    if as_json:
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(report.render_text())
+    return 1 if report.status == STATUS_FAIL else 0
+
+
+USAGE = """\
+Creo MCP server
+
+Usage:
+  creo-mcp                          Serve MCP over stdio (default)
+  creo-mcp --transport MODE         Serve with MODE = stdio | streamable-http
+  creo-mcp --transport streamable-http [--host H] [--port P]
+  creo-mcp --list                   Print every tool grouped by capability
+  creo-mcp --list-json              Same, machine-readable JSON
+  creo-mcp --list --with-schema     Also print one-line descriptions
+  creo-mcp --list-json --with-schema  Include full input/output JSON schemas
+  creo-mcp --doctor                 Run local preflight checks (no Creo mutation)
+  creo-mcp --doctor --probe         Also verify a live Creo connection
+  creo-mcp --doctor --json          Preflight report as JSON
+  creo-mcp --broker | --broker-status | --broker-stop
+  creo-mcp --probe-status
+  creo-mcp --operation NAME --payload JSON
+"""
+
+
+def _flag_value(argv: list[str], flag: str) -> str | None:
+    """Return the value following `flag`, or None when absent or valueless."""
+    if flag not in argv:
+        return None
+    index = argv.index(flag) + 1
+    if index >= len(argv):
+        return None
+    return argv[index]
+
+
 def main() -> None:
-    """Run either a one-shot probe, the broker, or the standard MCP stdio transport."""
+    """Run either a maintenance CLI, a one-shot probe, the broker, or the MCP transport."""
+    argv = sys.argv[1:]
+    if "--help" in argv or "-h" in argv:
+        print(USAGE, end="")
+        raise SystemExit(0)
+    if "--list" in argv or "--list-json" in argv:
+        raise SystemExit(
+            _tool_catalog_for_cli(
+                as_json="--list-json" in argv,
+                include_schema="--with-schema" in argv,
+            )
+        )
+    if "--doctor" in argv:
+        raise SystemExit(
+            _doctor_for_cli(probe="--probe" in argv, as_json="--json" in argv)
+        )
     if len(sys.argv) == 2 and sys.argv[1] == "--broker":
         raise SystemExit(broker.run_broker())
     if len(sys.argv) == 2 and sys.argv[1] == "--broker-status":
@@ -1376,7 +1668,27 @@ def main() -> None:
             print(json.dumps({"ok": False, "error": f"Invalid operation payload: {exc}"}))
             raise SystemExit(1)
         raise SystemExit(_run_operation(sys.argv[2], payload))
+
+    transport = _flag_value(argv, "--transport") or "stdio"
+    if transport not in ("stdio", "streamable-http"):
+        print(
+            f"Unsupported --transport {transport!r}; use 'stdio' or 'streamable-http'.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    host = _flag_value(argv, "--host") or "127.0.0.1"
+    raw_port = _flag_value(argv, "--port")
     try:
-        create_server().run(transport="stdio")
+        port = int(raw_port) if raw_port is not None else 8000
+    except ValueError:
+        print(f"Invalid --port {raw_port!r}; expected an integer.", file=sys.stderr)
+        raise SystemExit(2)
+
+    try:
+        create_server(host=host, port=port).run(transport=transport)
     finally:
         _shutdown_persistent_worker()
+
+
+if __name__ == "__main__":
+    main()

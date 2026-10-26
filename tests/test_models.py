@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
 
 from creo_mcp.models import (
     BoxDimensionSymbols,
@@ -12,6 +14,7 @@ from creo_mcp.models import (
     CreatePartRequest,
     InspectModelGeometryRequest,
     PackagingBoxPlanRequest,
+    UdfManifest,
     UpdateModelMetadataRequest,
     create_packaging_box_plan,
 )
@@ -65,7 +68,11 @@ class CreoModelSchemaTests(unittest.TestCase):
             )
 
     def test_empty_part_request_accepts_safe_creo_part_name(self) -> None:
-        request = CreatePartRequest(part_name="mcp_test_part", activate=False)
+        request = CreatePartRequest(
+            part_name="mcp_test_part",
+            activate=False,
+            confirmation="create_empty_part",
+        )
 
         self.assertEqual(request.part_name, "mcp_test_part")
         self.assertFalse(request.activate)
@@ -151,6 +158,35 @@ class CreoModelSchemaTests(unittest.TestCase):
                 ],
                 confirmation="update_model_metadata",
             )
+
+
+class BlisterTrayUdfCandidateManifestTests(unittest.TestCase):
+    """The pending tray UDF asset must not drift into an invalid contract."""
+
+    MANIFEST = (
+        Path(__file__).resolve().parents[1]
+        / "live-validation"
+        / "blister-tray.candidate.udf.json"
+    )
+
+    def test_candidate_manifest_is_schema_valid_and_unqualified(self) -> None:
+        raw = json.loads(self.MANIFEST.read_text(encoding="utf-8"))
+        manifest = UdfManifest.model_validate(raw)
+
+        self.assertIs(manifest.verified_non_interactive, False)
+        self.assertEqual(manifest.qualified_creo_versions, ["13.4.1.0"])
+        self.assertEqual(manifest.allowed_model_kinds, ["part"])
+        self.assertTrue(manifest.references, "the tray UDF must declare its references")
+
+    def test_candidate_manifest_still_marks_pending_asset_steps(self) -> None:
+        raw = json.loads(self.MANIFEST.read_text(encoding="utf-8"))
+
+        # The .gph has not been exported yet, so the hash stays a visible placeholder
+        # and every dimension name that must be read from the template keeps its TODO.
+        self.assertEqual(raw["sha256"], "0" * 64)
+        pending = [dimension["name"] for dimension in raw["variant_dimensions"]]
+        self.assertEqual(len(pending), 5)
+        self.assertTrue(all(name.startswith("TODO_") for name in pending))
 
 
 if __name__ == "__main__":

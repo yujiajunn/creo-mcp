@@ -11,10 +11,13 @@ from unittest.mock import patch
 
 os.environ.setdefault("CREO_MCP_DISPLAY_MODE", "display")
 
+from pydantic import ValidationError
+
 from creo_mcp.bridge import (
     export_model,
     get_handoff_report,
     save_model_as,
+    update_feature_suppression,
     update_model_metadata,
 )
 from creo_mcp.errors import CreoMcpError
@@ -23,6 +26,7 @@ from creo_mcp.models import (
     ExportModelRequest,
     HandoffReportRequest,
     SaveModelAsRequest,
+    UpdateFeatureSuppressionRequest,
     UpdateModelMetadataRequest,
 )
 
@@ -58,6 +62,25 @@ class _FakeFeature(_FakeItem):
         self.FeatType = 13
         self.FeatTypeName = "DATUM PLANE"
         self.Status = status
+        self.suppress_calls = 0
+        self.resume_calls = 0
+
+    def Suppress(self) -> None:
+        self.suppress_calls += 1
+        self.Status = 5
+
+    def Resume(self) -> None:
+        self.resume_calls += 1
+        self.Status = 0
+
+
+class _FeatureWithoutSuppressionApi(_FakeFeature):
+    """Feature object whose type library exposes neither suppress nor resume."""
+
+    def __getattribute__(self, name: str) -> object:
+        if name in ("Suppress", "SuppressFeature", "Resume", "ResumeFeature"):
+            raise AttributeError(name)
+        return super().__getattribute__(name)
 
 
 class _FakeDimension:
@@ -433,6 +456,173 @@ class MaintenanceTests(unittest.TestCase):
             self.assertEqual(model.last_export[1], 15)
             self.assertEqual(model.last_export[0], str(output.with_suffix("")))
             self.assertFalse(result.saved)
+
+
+class _StubbornFeature(_FakeFeature):
+    """Accepts a Suppress call that Creo never reflects in the model tree."""
+
+    def Suppress(self) -> None:
+        self.suppress_calls += 1
+
+
+class FeatureSuppressionTests(unittest.TestCase):
+    """Mock coverage for model-tree suppression; Creo semantics need a live session."""
+
+    def _run(self, features, updates):
+        model = _FakeModel()
+        model.features = list(features)
+        session = _FakeSession(model, r"D:\CreoWork")
+        request = UpdateFeatureSuppressionRequest(
+            updates=updates,
+            confirmation="update_feature_suppression",
+        )
+        with patch(
+            "creo_mcp.bridge._connected_session", return_value=_fake_connection(session)
+        ):
+            return model, session, update_feature_suppression(request)
+
+    def test_suppress_by_name_and_resume_by_id_report_observed_status(self) -> None:
+        slot = _FakeFeature(10, "SLOT1_CUT", status=0)
+        flange = _FakeFeature(11, "SEAL_FLANGE", status=5)
+        model, session, result = self._run(
+            [_FakeFeature(1, "FRONT"), slot, flange],
+            [
+                {"feature_name": "slot1_cut", "suppressed": True},
+                {"item_id": 11, "suppressed": False},
+            ],
+        )
+
+        self.assertEqual(slot.suppress_calls, 1)
+        self.assertEqual(flange.resume_calls, 1)
+        self.assertEqual(model.regenerate_count, 1)
+        self.assertEqual(session.window.repaint_count, 1)
+        self.assertTrue(result.regenerated)
+        self.assertFalse(result.saved)
+        by_id = {item.item_id: item for item in result.features}
+        self.assertEqual(by_id[10].name, "SLOT1_CUT")
+        self.assertEqual(by_id[10].previous_status_name, "active")
+        self.assertEqual(by_id[10].resulting_status_name, "suppressed")
+        self.assertTrue(by_id[10].changed)
+        self.assertEqual(by_id[11].previous_status_name, "suppressed")
+        self.assertEqual(by_id[11].resulting_status_name, "active")
+
+    def test_features_already_in_state_make_no_creos_call(self) -> None:
+        slot = _FakeFeature(10, "SLOT1_CUT", status=5)
+        model, _session, result = self._run(
+            [slot], [{"feature_name": "SLOT1_CUT", "suppressed": True}]
+        )
+
+        self.assertEqual(slot.suppress_calls, 0)
+        self.assertEqual(model.regenerate_count, 1)
+        self.assertFalse(result.features[0].changed)
+        self.assertEqual(result.features[0].resulting_status_name, "suppressed")
+
+    def test_unknown_target_aborts_before_any_feature_is_touched(self) -> None:
+        slot = _FakeFeature(10, "SLOT1_CUT", status=0)
+        model = _FakeModel()
+        model.features = [slot]
+        session = _FakeSession(model, r"D:\CreoWork")
+        request = UpdateFeatureSuppressionRequest(
+            updates=[
+                {"feature_name": "SLOT1_CUT", "suppressed": True},
+                {"feature_name": "SLOT7_CUT", "suppressed": True},
+            ],
+            confirmation="update_feature_suppression",
+        )
+
+        with patch(
+            "creo_mcp.bridge._connected_session", return_value=_fake_connection(session)
+        ):
+            with self.assertRaisesRegex(CreoMcpError, "No feature named") as raised:
+                update_feature_suppression(request)
+
+        self.assertIn("SLOT1_CUT", str(raised.exception))
+        self.assertEqual(slot.suppress_calls, 0)
+        self.assertEqual(model.regenerate_count, 0)
+
+    def test_program_driven_suppression_is_refused(self) -> None:
+        feature = _FakeFeature(12, "DRAFT_ALL", status=4)
+        model = _FakeModel()
+        model.features = [feature]
+        session = _FakeSession(model, r"D:\CreoWork")
+        request = UpdateFeatureSuppressionRequest(
+            updates=[{"feature_name": "DRAFT_ALL", "suppressed": False}],
+            confirmation="update_feature_suppression",
+        )
+
+        with patch(
+            "creo_mcp.bridge._connected_session", return_value=_fake_connection(session)
+        ):
+            with self.assertRaisesRegex(CreoMcpError, "owned by a family table"):
+                update_feature_suppression(request)
+
+        self.assertEqual(feature.resume_calls, 0)
+        self.assertEqual(model.regenerate_count, 0)
+
+    def test_ambiguous_feature_name_requires_item_id(self) -> None:
+        first = _FakeFeature(20, "SLOT_CUT", status=0)
+        second = _FakeFeature(21, "SLOT_CUT", status=0)
+        with self.assertRaisesRegex(CreoMcpError, "matches several features"):
+            self._run([first, second], [{"feature_name": "SLOT_CUT", "suppressed": True}])
+        self.assertEqual(first.suppress_calls, 0)
+
+    def test_missing_suppression_method_reports_the_probe_failure(self) -> None:
+        feature = _FeatureWithoutSuppressionApi(30, "MYSTERY", status=0)
+        model = _FakeModel()
+        model.features = [feature]
+        session = _FakeSession(model, r"D:\CreoWork")
+        request = UpdateFeatureSuppressionRequest(
+            updates=[{"feature_name": "MYSTERY", "suppressed": True}],
+            confirmation="update_feature_suppression",
+        )
+
+        with patch(
+            "creo_mcp.bridge._connected_session", return_value=_fake_connection(session)
+        ):
+            with self.assertRaisesRegex(CreoMcpError, "no feature suppression method") as raised:
+                update_feature_suppression(request)
+
+        self.assertIn("Probed", str(raised.exception))
+        self.assertEqual(model.regenerate_count, 0)
+
+    def test_unconfirmed_resulting_status_is_an_error(self) -> None:
+        feature = _StubbornFeature(40, "SLOT9_CUT", status=0)
+        model = _FakeModel()
+        model.features = [feature]
+        session = _FakeSession(model, r"D:\CreoWork")
+        request = UpdateFeatureSuppressionRequest(
+            updates=[{"feature_name": "SLOT9_CUT", "suppressed": True}],
+            confirmation="update_feature_suppression",
+        )
+
+        with patch(
+            "creo_mcp.bridge._connected_session", return_value=_fake_connection(session)
+        ):
+            with self.assertRaisesRegex(CreoMcpError, "did not report the requested") as raised:
+                update_feature_suppression(request)
+
+        self.assertEqual(feature.suppress_calls, 1)
+        self.assertEqual(model.regenerate_count, 1)
+        self.assertIn("SLOT9_CUT", str(raised.exception))
+
+    def test_each_target_needs_exactly_one_selector(self) -> None:
+        no_selector = [{"suppressed": True}]
+        both_selectors = [{"feature_name": "SLOT1_CUT", "item_id": 10, "suppressed": True}]
+        for updates in (no_selector, both_selectors):
+            with self.assertRaises(ValidationError):
+                UpdateFeatureSuppressionRequest(
+                    updates=updates, confirmation="update_feature_suppression"
+                )
+
+    def test_duplicate_targets_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "must be unique"):
+            UpdateFeatureSuppressionRequest(
+                updates=[
+                    {"feature_name": "SLOT1_CUT", "suppressed": True},
+                    {"feature_name": "slot1_cut", "suppressed": False},
+                ],
+                confirmation="update_feature_suppression",
+            )
 
 
 if __name__ == "__main__":

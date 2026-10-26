@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "udf_name": "blister_tray_cavity_v0",
+  "udf_file": "udf\\blister_tray_cavity_v0.gph",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "qualified_creo_versions": [
+    "13.4.1.0"
+  ],
+  "allowed_model_kinds": [
+    "part"
+  ],
+  "verified_non_interactive": false,
+  "references": [
+    {
+      "prompt": "TRAY_ORIGIN_CSYS",
+      "item_type": "coordinate_system"
+    },
+    {
+      "prompt": "SEAL_FLANGE_PLANE",
+      "item_type": "feature"
+    }
+  ],
+  "variant_dimensions": [
+    {
+      "name": "TODO_CAVITY_LENGTH_DIM",
+      "unit": "mm",
+      "minimum": 5.0,
+      "maximum": 400.0
+    },
+    {
+      "name": "TODO_CAVITY_WIDTH_DIM",
+      "unit": "mm",
+      "minimum": 5.0,
+      "maximum": 300.0
+    },
+    {
+      "name": "TODO_CAVITY_DEPTH_DIM",
+      "unit": "mm",
+      "minimum": 3.0,
+      "maximum": 150.0
+    },
+    {
+      "name": "TODO_WALL_THICKNESS_DIM",
+      "unit": "mm",
+      "minimum": 0.4,
+      "maximum": 3.0
+    },
+    {
+      "name": "TODO_FLANGE_WIDTH_DIM",
+      "unit": "mm",
+      "minimum": 6.0,
+      "maximum": 15.0
+    }
+  ]
+}

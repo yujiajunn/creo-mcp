@@ -13,6 +13,22 @@
 - 测试模型：由 `吸塑盒.stp` 导入的未保存零件 `吸塑盒.prt`、由 `针管.stp`
   导入的毫米制装配 `针管.asm`
 
+## 0.16.0 模型树抑制与恢复（2026-10-26，待真实会话验证）
+
+- 新增 `creo_update_feature_suppression`，工具总数 30。链路与
+  `creo_update_model_metadata` 同构：全部目标先解析再改动，已处于目标状态的特征不发
+  COM 调用，重生成后逐个读回状态，与请求不一致即报错，默认不保存。
+- Mock 覆盖在 `tests/test_maintenance.py` 的 `FeatureSuppressionTests`：按名与按 ID
+  定位、名称歧义、目标不存在时不产生任何修改、族表/简化表示/程序压制状态被拒绝、
+  Creo 未反映状态时判定失败、类型库缺少方法时报出实际成员名。
+- 真实会话首先要确认的是 **pfcls 实际暴露的抑制/恢复成员名**。当前按 `Suppress` →
+  `SuppressFeature`、`Resume` → `ResumeFeature` 顺序探测；若全部落空，错误信息会列出
+  Creo 实际返回的成员名，据此修正 `creo_mcp/bridge.py` 顶部的
+  `FEATURE_SUPPRESS_MEMBERS` 与 `FEATURE_RESUME_MEMBERS`，不要凭印象改名。
+- 验证步骤：在一个带预置抑制特征的测试零件副本上，抑制 → 重生成 → 读回状态，再
+  恢复 → 重生成 → 读回状态；然后对一个族表压制的特征确认工具按预期拒绝。通过之前，
+  本工具不得写进模板分派表（见 `ARCHITECTURE.zh-CN.md` 的 Phase 1.5）。
+
 ## 0.11.0 概念托盘离线验证
 
 - 新增单槽、多槽和组装件粗随形概念规划/创建、逐实体 STEP 测量、包装参考分析及型腔放入检查，工具总数为 31。
@@ -343,6 +359,10 @@ API 结果：
 - UDF 缺少引用、尺寸越界和版本不匹配时的真实 Creo 行为。
 - 装配组件路径和外部引用。
 - `creo_update_model_metadata` 的真实命名尺寸写入；参数创建/更新和模型项目重命名已通过。
+- `creo_update_feature_suppression` 的真实抑制与恢复。这一步还要确认 pfcls 类型库
+  实际暴露的成员名：当前按 `Suppress` → `SuppressFeature`、`Resume` →
+  `ResumeFeature` 顺序探测，找不到时会在错误里列出 Creo 实际返回的成员名，据此
+  修正 `creo_mcp/bridge.py` 的探测列表，不要改成猜测别的名字。
 - `creo_get_handoff_report` 对真实失败或抑制特征的报告；匿名和导入特征已通过。
 - `creo_save_model_as` 已在装配上通过；零件另存副本仍待真实验证。
 - `creo_export_model` 的 IGES、Parasolid 和可选 profile；STEP 已通过。
@@ -363,3 +383,6 @@ PTC 自带样例零件上成功完成一次非交互放置之前，UDF 写入能
 3. 只有确认上述步骤后，才把正式清单标记为 `verified_non_interactive=true` 并重新验证。
 4. 在带命名驱动尺寸的测试零件副本上验证毫米/英寸尺寸更新。
 5. 继续验证零件另存副本、IGES、Parasolid 和可选 export profile。
+6. 在一个带预置抑制特征的测试零件副本上验证 `creo_update_feature_suppression`：
+   先抑制、重生成、读回状态，再恢复、重生成、读回状态；同时验证族表或程序压制的
+   特征会被拒绝。通过后才能把它写进模板分派表的执行侧。

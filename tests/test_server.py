@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import tomllib
 import unittest
 from pathlib import Path
@@ -33,15 +34,24 @@ class ServerContractTests(unittest.TestCase):
         tools = server._tool_manager.list_tools()
         resources = server._resource_manager.list_resources()
 
-        self.assertEqual(len(tools), 27)
+        self.assertEqual(len(tools), 30)
         self.assertTrue(all(tool.title for tool in tools))
         self.assertTrue(all(tool.description for tool in tools))
-        self.assertTrue(all(tool.output_schema for tool in tools if tool.name != "creo_capture_screenshot"))
+        # Meta tools return compact JSON without an output schema on purpose:
+        # tools/list payload size is a per-turn context cost (see
+        # docs/TOOL_CONVENTIONS.zh-CN.md).
+        meta_tools = {"creo_tool_catalog", "creo_get_capabilities"}
+        schema_exempt = {"creo_capture_screenshot"} | meta_tools
+        self.assertTrue(
+            all(tool.output_schema for tool in tools if tool.name not in schema_exempt)
+        )
         tool_names = {tool.name for tool in tools}
         self.assertIn("creo_capture_screenshot", tool_names)
         self.assertIn("creo_build_geometry", tool_names)
         self.assertIn("creo_plan_product_clearance_tray", tool_names)
         self.assertIn("creo_create_product_clearance_tray", tool_names)
+        self.assertIn("creo_update_feature_suppression", tool_names)
+        self.assertTrue(meta_tools <= tool_names)
         self.assertNotIn("creo_create_concept_tray", tool_names)
         self.assertNotIn("creo_create_product_silhouette_tray", tool_names)
         self.assertEqual(
@@ -52,6 +62,8 @@ class ServerContractTests(unittest.TestCase):
                 "creo://docs/engineering-standard",
                 "creo://docs/live-validation",
                 "creo://docs/udf-manifest",
+                "creo://server/status",
+                "creo://tools/catalog",
             },
         )
 
@@ -69,8 +81,29 @@ class ServerContractTests(unittest.TestCase):
 
         docs = asyncio.run(read_docs())
 
-        self.assertEqual(len(docs), 5)
+        self.assertEqual(len(docs), 7)
         self.assertTrue(all(text.strip() for text in docs.values()))
+
+
+class WorkerCommandTests(unittest.TestCase):
+    def test_worker_command_uses_the_repository_shim_when_present(self) -> None:
+        command = server_module._worker_command("--persistent-worker")
+
+        self.assertEqual(command[0], sys.executable)
+        self.assertTrue(Path(command[1]).is_file())
+        self.assertEqual(command[-1], "--persistent-worker")
+
+    def test_worker_command_falls_back_to_the_module_entry(self) -> None:
+        original = server_module._probe_script_path
+        try:
+            server_module._probe_script_path = (
+                lambda: Path("Z:/definitely/missing/creo_mcp_server.py")
+            )
+            command = server_module._worker_command("--operation", "inspect_part")
+        finally:
+            server_module._probe_script_path = original
+
+        self.assertEqual(command[1:3], ["-m", "creo_mcp.server"])
 
 
 class ProgressRelayTests(unittest.IsolatedAsyncioTestCase):

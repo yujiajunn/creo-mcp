@@ -165,6 +165,14 @@ validation ID, Creo version, target model kind, complete references, and bounded
 dimension values before calling `CreateUDFGroup`. It disables interactive repair,
 regenerates, reports group members and geometry, and never saves the target.
 
+Model-tree editing is implemented by `creo_update_model_metadata` (semantic
+renames, named dimensions, typed parameters) and `creo_update_feature_suppression`
+(suppress and resume features by name or stable ID). Suppression resolves every
+target before touching any feature, skips features already in the requested state
+without a Creo call, refuses states a family table, simplified representation, or
+the model program owns, regenerates, and then reads each status back so an
+unconfirmed result is an error rather than a silent success. It never saves.
+
 Raw `.gph` files must not be placed non-interactively without a qualified
 manifest. Missing inputs cause Creo to prompt interactively, which breaks the
 automation contract and can leave a timed-out operation waiting in the UI.
@@ -184,9 +192,13 @@ The MCP should grow by capability, not by product. The planned order is:
    - add dimensions and geometric constraints
 3. Core solid features
    - extrude, revolve, hole, shell, round, chamfer, pattern, mirror, and sweep
+   - delivered through the Phase 1.5 dispatch table and qualified UDFs, not by
+     creating features from scratch
 4. Feature and parameter editing
    - read and set named dimensions and parameters
-   - suppress, resume, reorder, and regenerate with explicit validation
+   - suppress and resume features (`creo_update_feature_suppression`; implemented,
+     pending live Creo validation)
+   - reorder, and regenerate with explicit validation
 5. Assembly operations
    - create assemblies, add components, and apply placement constraints
 6. Persistence and interchange
@@ -195,6 +207,52 @@ The MCP should grow by capability, not by product. The planned order is:
 Product skills compose these operations. For example, a syringe skill can use
 revolve and extrude operations, while a blister skill can use measured product
 geometry, offsets, draft, shell, and rounds.
+
+### Phase 1.5: the template dispatch table
+
+Phase 1.5 widens feature coverage without introducing a Pro/Toolkit C++ add-in.
+It is the equivalent of a competitor MCP's UI-command table, except that every
+row must pass manifest validation.
+
+A dispatch table maps one generic action name onto one verifiable asset:
+
+| Field | Meaning |
+|---|---|
+| Action name | Generic verb, for example `cavity_cut`, `seal_flange`, `draft_all` |
+| Asset | A qualified UDF `.gph`, or a part template with named driver dimensions |
+| Reference bindings | Each reference bound to a stable role (cavity origin CSYS, seal plane) |
+| Driver dimensions | Named dimension set, units, legal ranges, defaults |
+| Suppression slots | Features preset but suppressed (draft, rounds); unsuppressing enables them |
+| Release evidence | The live Creo validation record that qualifies the row |
+
+The boundary follows from what the API can actually do: the Creo 13.4 VB API
+cannot create a native feature, but it **can update the named dimensions of an
+existing feature and regenerate**, and a UDF group can carry native features. Thin
+feature tools are therefore composed from `creo_place_qualified_udf` (place a
+feature group), `creo_update_model_metadata` (write named dimensions and typed
+parameters), and `creo_update_feature_suppression` (enable suppressed features
+already present in the template). That covers extrude, cut, draft, and round for
+common cases. A Pro/Toolkit add-in
+becomes a prerequisite only for creating a brand-new feature type from scratch or
+replaying UI commands; it is the complement of this capability, not a precondition
+for Phase 1.5.
+
+Split table content from table execution, using the MCP-versus-skill test stated
+above:
+
+- Table content (which templates a product uses, how its dimensions are computed)
+  belongs to a skill or a configuration resource.
+- Table execution (manifest validation, reference binding, placement, dimension
+  writes, suppression and resume, regeneration, measurement) belongs to the MCP.
+
+Safety-critical actions never join the thin table. Saving, save-as, export, and
+replacing an existing model stay separate tools with explicit confirmation. The
+thin table widens what geometry may change, not what disk may be written.
+
+A row may enter the table only after it satisfies the new-tool checklist in
+`docs/TOOL_CONVENTIONS.zh-CN.md`, which requires a live Creo validation record for
+write operations. Rows without such a record remain candidates and must not be
+selectable by skills.
 
 ## Transitional tools
 
@@ -209,14 +267,23 @@ do not need to shape future interfaces.
 
 ## Testing strategy
 
-The integration uses three verification levels:
+The integration uses four verification levels:
 
 1. Pure unit tests validate schemas, path handling, format detection, operation
    planning, unit conversion, and overwrite protection.
-2. A standard MCP client verifies tool discovery, annotations, and input/output
+2. Surface contract tests validate the tool face itself: naming, titles,
+   description budgets, annotation/verb agreement, required confirmation tokens,
+   cross-references to tools that actually exist, and a `tools/list` payload
+   budget (`tests/test_tool_conventions.py`, backed by `creo_mcp/catalog.py`).
+3. A standard MCP client verifies tool discovery, annotations, and input/output
    schemas over stdio.
-3. Live Creo checks run from the same interactive Windows session as Creo and
+4. Live Creo checks run from the same interactive Windows session as Creo and
    verify official COM calls against real native and imported models.
+
+The same information is available from the command line without a client:
+`creo-mcp --list`, `creo-mcp --list-json`, and `creo-mcp --doctor` (plus
+`--doctor --probe` for a live connection check). Preflight results are also a
+readable resource, `creo://server/status`.
 
 Live checks are required before a new write tool is considered production-ready.
 Mocks prove request construction and invariants, but they cannot prove Creo's

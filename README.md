@@ -1,12 +1,13 @@
 # Creo MCP
 
-This is a portable Creo bridge built on the standard MCP stdio transport:
+This is a portable Creo bridge built on the standard MCP transport:
 
 ```text
-any MCP client → MCP (stdio) → Python → official PTC VB API / COM → Creo
+any MCP client → MCP (stdio by default, streamable-http optional)
+              → Python → official PTC VB API / COM → Creo
 ```
 
-It uses the standard MCP stdio transport and contains no nanobot-specific code.
+It uses the standard MCP transports and contains no nanobot-specific code.
 It works with any compatible local MCP client, including nanobot, Codex,
 Claude Desktop, and Cursor.
 
@@ -22,6 +23,10 @@ qualification gaps are tracked in
 [LIVE_VALIDATION.zh-CN.md](creo_mcp/docs/LIVE_VALIDATION.zh-CN.md). Client setup, protocol
 compatibility, distribution options, and the prioritized improvement backlog are
 documented in [CLIENT_SETUP.zh-CN.md](creo_mcp/docs/CLIENT_SETUP.zh-CN.md).
+Tool naming, descriptions, annotation and payload-budget rules live in
+[TOOL_CONVENTIONS.zh-CN.md](docs/TOOL_CONVENTIONS.zh-CN.md). The comparison with the
+commercial ZW3D MCP (what to borrow, what not to) and the code audit are in
+[docs/reference](docs/reference/).
 
 It currently exposes these tools:
 
@@ -73,10 +78,17 @@ It currently exposes these tools:
 - `creo_open_native_model` — loads and measures an existing native Creo `.prt`
   or `.asm` without modifying or saving its source file.
 - `creo_create_empty_part` — creates and activates a new **unsaved** Creo part.
-  It is the first write-path verification and should require client-side approval.
+  It requires `confirmation: "create_empty_part"` and is the first write-path
+  verification.
 - `creo_update_model_metadata` — renames stable model items, changes named
   driving dimensions with explicit units, creates or updates typed model
   parameters, regenerates, and leaves the model unsaved.
+- `creo_update_feature_suppression` — suppresses or resumes model-tree features by
+  name or stable ID, skips features already in the requested state, refuses states a
+  family table, simplified representation, or the model program owns, regenerates,
+  and reads every status back. It requires `confirmation:
+  "update_feature_suppression"` and never saves. Live Creo validation is still
+  pending; see `creo_mcp/docs/LIVE_VALIDATION.zh-CN.md`.
 - `creo_save_model_as` — creates a protected native part or assembly copy under
   a new name, refuses all existing Creo versions, and restores the original
   Creo working directory.
@@ -96,6 +108,37 @@ It currently exposes these tools:
 The tools use explicit JSON schemas, structured output, standard MCP tool
 annotations, isolated COM calls, and timeouts. Write operations are separate
 from inspection and planning operations.
+
+## Discovery and diagnostics
+
+Two meta tools and two JSON resources make the surface inspectable without
+loading every tool definition into context:
+
+- `creo_tool_catalog` — every tool grouped as `meta` / `read` / `modify` /
+  `write`, with title and parameter count; `include_schema=true` adds full JSON
+  schemas.
+- `creo_get_capabilities` — the hard capability boundaries of this bridge: which
+  general feature paths the Creo 13.4 VB API does not expose, which CAD inputs
+  are ambiguous (`.prt`), how units are normalized, and what must be verified
+  after an edit.
+- `creo://server/status` — server version, tool/resource counts, and the local
+  preflight report.
+- `creo://tools/catalog` — the catalog as a JSON resource.
+
+The same information is available from the command line, without an MCP client:
+
+```powershell
+.\.venv\Scripts\creo-mcp.exe --list               # human-readable, grouped
+.\.venv\Scripts\creo-mcp.exe --list-json          # machine-readable
+.\.venv\Scripts\creo-mcp.exe --doctor             # preflight, no Creo mutation
+.\.venv\Scripts\creo-mcp.exe --doctor --probe     # + live Creo connection check
+```
+
+`--doctor` checks the platform, Python, `pywin32`, the `mcp` version, the Creo
+loadpoint from the registry, the `pfcls.pfcAsyncConnection` COM registration,
+the running `xtop.exe` process, operation-log writability, and the broker. Every
+actionable failure carries a Chinese remediation hint. Exit code is `1` only
+when a check fails (`warn`/`skip` still exit `0`).
 
 ## Architecture boundary
 
@@ -139,6 +182,23 @@ Before creating a tray, use `creo_plan_product_clearance_tray` with the product
 STEP in its intended packaged state. A file-level bounding box is only an early
 screening measurement; the hard-edge plan verifies complete containment and a
 straight insertion path, but not retention, forming, or manufacturing.
+
+For an editable native rough blank instead of one imported solid, `creo_mcp.cavity_segments`
+collapses the same conservative cavity prisms into a small stack of rectangular steps
+(`live-validation/segment_probe.py` prints the table offline, no Creo required). See
+`live-validation/TRAY_SEGMENTATION_SAMPLES.zh-CN.md` for measurements on three real
+samples and the segmented native template those numbers imply.
+
+Two behaviours worth knowing before you call `creo_create_product_clearance_tray`:
+
+- `output_directory` must already exist; the planner reports it instead of creating
+  directories on your behalf.
+- A successful result reports `activated: true`, which means Creo's standard display
+  path (`pfcModel.Display`) ran. It does not promise a foreground window: creating or
+  activating a window deliberately is avoided because it corrupts Creo 13.4 graphics.
+  `creo_get_status` may therefore show `active_model: null`. Read the model back by
+  name instead — `model_name` and `model_kind` must be supplied together, and an
+  unqualified request then fails with "not loaded in the session".
 
 ## Native packaging-box template
 
@@ -215,6 +275,8 @@ automatically after the following connection is added to its config:
         "cwd": "<repo>",
         "toolTimeout": 150,
         "enabledTools": [
+          "creo_tool_catalog",
+          "creo_get_capabilities",
           "creo_get_status",
           "creo_get_active_model",
           "creo_get_model_geometry",
@@ -233,6 +295,7 @@ automatically after the following connection is added to its config:
           "creo_inspect_step_file",
           "creo_create_empty_part",
           "creo_update_model_metadata",
+          "creo_update_feature_suppression",
           "creo_save_model_as",
           "creo_export_model",
           "creo_open_native_model",
@@ -257,10 +320,25 @@ Run the package tests from the integration directory:
 
 ```powershell
 cd <repo>
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-One-shot operations are available for local diagnosis without an MCP client:
+Use pytest, not `python -m unittest discover`: part of the suite (catalog,
+diagnostics, and tool-convention tests) is written as pytest functions and is
+silently skipped by unittest discovery.
+
+Then check the surface and the machine without an MCP client:
+
+```powershell
+.\.venv\Scripts\creo-mcp.exe --list
+.\.venv\Scripts\creo-mcp.exe --doctor
+```
+
+One-shot operations are available for local diagnosis without an MCP client.
+While the broker is running, these requests are routed through it and the result
+carries `"via": "broker"`; only when no broker is alive does the command open its
+own VB API connection, because Creo allows just one:
 
 ```powershell
 <repo>\.venv\Scripts\python.exe .\creo_mcp_server.py `
@@ -327,9 +405,13 @@ and never save it.
 
 For engineering handoff, first run `handoff_report`, then make explicitly
 confirmed semantic-name, dimension, and ownership-parameter changes with
-`update_model_metadata`. Inspect the report again before separately requesting
+`update_model_metadata`, and enable or disable template features that were preset
+suppressed with `update_feature_suppression`. Inspect the report again before separately requesting
 `save_model_as` or `export_model`. One-shot CLI responses include an
-`operation_id`; recent records are also available through the
+`operation_id` whether they run through a live broker (`"via": "broker"`) or open
+their own connection; recent records are also available through the
 `creo_get_operation_log` MCP tool. The default JSONL location is
 `%LOCALAPPDATA%\CreoMCP\logs\operations.jsonl`, and `CREO_MCP_LOG_DIR` can
-override its directory.
+override its directory. Broker state and its own log live under
+`%LOCALAPPDATA%\CreoMCP\`; set `CREO_MCP_RUNTIME_DIR` to relocate them, which is
+what the test session does so test runs never append to the production log.
