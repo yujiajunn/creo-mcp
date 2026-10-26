@@ -8,7 +8,6 @@ from pathlib import Path
 from .errors import CreoMcpError
 from .models import InspectStepRequest, StepFileInfo
 
-
 MAX_STEP_FILE_BYTES = 250_000_000
 _QUOTED_STRING = re.compile(r"'((?:''|[^'])*)'")
 

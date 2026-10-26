@@ -12,8 +12,8 @@ from creo_mcp.bridge import (
     _ensure_new_part_name,
     _native_descriptor_file_name,
     _native_descriptor_name,
-    _retrieve_part,
     _resolve_native_model_path,
+    _retrieve_part,
     _validate_extent,
 )
 from creo_mcp.errors import CreoMcpError

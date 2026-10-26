@@ -8,7 +8,6 @@ from typing import Any
 from .errors import CreoMcpError
 from .models import BoxExtent
 
-
 CONCEPT_DISPLAY_COLOR_RGB_255 = (66, 223, 208)
 
 

@@ -170,11 +170,10 @@ class GeometryDetailsTests(unittest.TestCase):
         with patch(
             "creo_mcp.bridge._connected_session",
             return_value=_fake_connection(session),
-        ):
-            with self.assertRaisesRegex(CreoMcpError, "surface ID 999"):
-                inspect_geometry_details(
-                    InspectGeometryDetailsRequest(surface_ids=[999], edge_ids=[84])
-                )
+        ), self.assertRaisesRegex(CreoMcpError, "surface ID 999"):
+            inspect_geometry_details(
+                InspectGeometryDetailsRequest(surface_ids=[999], edge_ids=[84])
+            )
 
 
 if __name__ == "__main__":

@@ -7,7 +7,6 @@ from pathlib import Path
 from .errors import CreoMcpError
 from .models import CadSourceInfo, ImportCadRequest, ResolvedCadImportFormat
 
-
 MAX_CAD_FILE_BYTES = 2_000_000_000
 
 # Values are from Creo 13.4's EpfcNewModelImportType type library.

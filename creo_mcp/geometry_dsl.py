@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
@@ -71,20 +71,20 @@ class SphereNode(_Node):
 
 class BooleanNode(_Node):
     op: Literal["union", "difference", "intersect"]
-    children: list["GeometryNode"] = Field(min_length=2, max_length=MAX_CHILDREN)
+    children: list[GeometryNode] = Field(min_length=2, max_length=MAX_CHILDREN)
 
 
 class MirrorNode(_Node):
     op: Literal["mirror"]
     plane: Literal["xy", "xz", "yz"]
-    child: "GeometryNode"
+    child: GeometryNode
 
 
 class PatternNode(_Node):
     op: Literal["linear_pattern"]
     count: int = Field(ge=2, le=32)
     step: Vec3 = Field(description="Translation applied to each successive copy.")
-    child: "GeometryNode"
+    child: GeometryNode
 
 
 class SourceNode(_Node):
@@ -105,14 +105,14 @@ class SourceNode(_Node):
 
 class TransformNode(_Node):
     op: Literal["transform"]
-    child: "GeometryNode"
+    child: GeometryNode
     translate: Vec3 = Field(default_factory=Vec3)
     rotate_axis: AxisToken | None = None
     rotate_angle_deg: float | None = Field(default=None, ge=-360.0, le=360.0)
     rotate_about: Vec3 = Field(default_factory=Vec3)
 
     @model_validator(mode="after")
-    def _rotation_needs_axis(self) -> "TransformNode":
+    def _rotation_needs_axis(self) -> TransformNode:
         if (self.rotate_axis is None) != (self.rotate_angle_deg is None):
             raise ValueError(
                 "rotate_axis and rotate_angle_deg must be provided together."
@@ -121,16 +121,7 @@ class TransformNode(_Node):
 
 
 GeometryNode = Annotated[
-    Union[
-        BoxNode,
-        CylinderNode,
-        SphereNode,
-        BooleanNode,
-        MirrorNode,
-        PatternNode,
-        SourceNode,
-        TransformNode,
-    ],
+    BoxNode | CylinderNode | SphereNode | BooleanNode | MirrorNode | PatternNode | SourceNode | TransformNode,
     Field(discriminator="op"),
 ]
 
@@ -226,12 +217,12 @@ def _api() -> dict[str, Any]:
             BRepPrimAPI_MakeCylinder,
             BRepPrimAPI_MakeSphere,
         )
+        from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
         from OCP.GProp import GProp_GProps
         from OCP.IFSelect import IFSelect_RetDone
         from OCP.STEPControl import STEPControl_Reader
         from OCP.TopAbs import TopAbs_SOLID
         from OCP.TopExp import TopExp_Explorer
-        from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
     except ImportError as exc:
         raise CreoMcpError(
             "The build_geometry tool requires the optional 'concept-geometry' extra. "

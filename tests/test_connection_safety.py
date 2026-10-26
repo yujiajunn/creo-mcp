@@ -90,10 +90,8 @@ class BridgeConnectionSafetyTests(unittest.TestCase):
         with patch.dict(
             sys.modules,
             {"win32api": win32api, "win32event": win32event},
-        ):
-            with self.assertRaisesRegex(CreoMcpError, "busy"):
-                with bridge._serialized_creo_connection():
-                    self.fail("The mutex should not have been acquired")
+        ), self.assertRaisesRegex(CreoMcpError, "busy"), bridge._serialized_creo_connection():
+            self.fail("The mutex should not have been acquired")
 
         win32event.ReleaseMutex.assert_not_called()  # type: ignore[attr-defined]
         win32api.CloseHandle.assert_called_once_with(mutex)  # type: ignore[attr-defined]
@@ -123,10 +121,9 @@ class BridgeConnectionSafetyTests(unittest.TestCase):
                 return_value=Path(r"D:\PTC\Creo"),
             ),
             patch("creo_mcp.bridge.time.sleep") as sleep,
-            self.assertRaisesRegex(CreoMcpError, "activation failed"),
+            self.assertRaisesRegex(CreoMcpError, "activation failed"),bridge._connected_session()
         ):
-            with bridge._connected_session():
-                self.fail("A failed COM activation must not yield a session")
+            self.fail("A failed COM activation must not yield a session")
 
         pythoncom.CoInitialize.assert_called_once_with()  # type: ignore[attr-defined]
         pythoncom.CoUninitialize.assert_called_once_with()  # type: ignore[attr-defined]
@@ -139,12 +136,11 @@ class BridgeConnectionSafetyTests(unittest.TestCase):
         with patch(
             "creo_mcp.bridge._new_connected_session",
             return_value=nullcontext(connected),
-        ) as connect:
-            with bridge.persistent_creo_connection():
-                with bridge._connected_session() as first:
-                    self.assertEqual(first, connected)
-                with bridge._connected_session() as second:
-                    self.assertEqual(second, connected)
+        ) as connect, bridge.persistent_creo_connection():
+            with bridge._connected_session() as first:
+                self.assertEqual(first, connected)
+            with bridge._connected_session() as second:
+                self.assertEqual(second, connected)
 
         connect.assert_called_once_with()
 

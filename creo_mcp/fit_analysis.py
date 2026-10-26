@@ -19,7 +19,6 @@ from .models import (
 )
 from .step import inspect_step_file, resolve_step_path
 
-
 _AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
 _GEOMETRY_TOLERANCE_MM = 1e-5
 
@@ -30,12 +29,12 @@ def _fit_ocp() -> dict[str, Any]:
         from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
         from OCP.BRepExtrema import BRepExtrema_DistShapeShape
         from OCP.BRepGProp import BRepGProp
+        from OCP.gp import gp_Trsf, gp_Vec
         from OCP.GProp import GProp_GProps
         from OCP.IFSelect import IFSelect_RetDone
         from OCP.STEPControl import STEPControl_Reader
         from OCP.TopAbs import TopAbs_SOLID
         from OCP.TopExp import TopExp_Explorer
-        from OCP.gp import gp_Trsf, gp_Vec
     except ImportError as exc:
         raise CreoMcpError(
             "Concept fit analysis requires the optional 'concept-geometry' extra."

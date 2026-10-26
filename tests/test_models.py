@@ -9,9 +9,9 @@ from pathlib import Path
 from creo_mcp.models import (
     BoxDimensionSymbols,
     CreatePackagingBoxRequest,
+    CreatePartRequest,
     CreoModelInfo,
     CreoStatus,
-    CreatePartRequest,
     InspectModelGeometryRequest,
     PackagingBoxPlanRequest,
     UdfManifest,

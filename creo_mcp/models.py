@@ -73,7 +73,7 @@ class PackagingBoxPlanRequest(BoxDimensions):
     )
 
     @model_validator(mode="after")
-    def validate_wall_thickness(self) -> "PackagingBoxPlanRequest":
+    def validate_wall_thickness(self) -> PackagingBoxPlanRequest:
         if self.wall_thickness_mm is not None and self.wall_thickness_mm * 2 >= min(
             self.length_mm,
             self.width_mm,
@@ -202,7 +202,7 @@ class BoxDimensionSymbols(BaseModel):
     height: str = Field(default="BOX_HEIGHT", min_length=1, max_length=32)
 
     @model_validator(mode="after")
-    def validate_unique_symbols(self) -> "BoxDimensionSymbols":
+    def validate_unique_symbols(self) -> BoxDimensionSymbols:
         normalized = {self.length.upper(), self.width.upper(), self.height.upper()}
         if len(normalized) != 3:
             raise ValueError("length, width, and height dimension symbols must be distinct.")
@@ -251,7 +251,7 @@ class CreatePackagingBoxRequest(BoxDimensions):
     )
 
     @model_validator(mode="after")
-    def validate_confirmed_plan(self) -> "CreatePackagingBoxRequest":
+    def validate_confirmed_plan(self) -> CreatePackagingBoxRequest:
         if self.wall_thickness_mm is not None:
             raise ValueError(
                 "wall_thickness_mm is not supported by the solid-envelope creator yet; use null."
@@ -311,7 +311,7 @@ class ProductOrientation(BaseModel):
     tray_z_from: SignedAxis
 
     @model_validator(mode="after")
-    def validate_rigid_orientation(self) -> "ProductOrientation":
+    def validate_rigid_orientation(self) -> ProductOrientation:
         tokens = (self.tray_x_from, self.tray_y_from, self.tray_z_from)
         axes = [token.removeprefix("-") for token in tokens]
         if len(set(axes)) != 3:
@@ -705,7 +705,7 @@ class InspectModelGeometryRequest(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_model_lookup(self) -> "InspectModelGeometryRequest":
+    def validate_model_lookup(self) -> InspectModelGeometryRequest:
         if (self.model_name is None) != (self.model_kind is None):
             raise ValueError("model_name and model_kind must either both be set or both be null.")
         return self
@@ -755,7 +755,7 @@ class InspectGeometryDetailsRequest(InspectModelGeometryRequest):
     edge_ids: list[int] = Field(default_factory=list, max_length=200)
 
     @model_validator(mode="after")
-    def validate_geometry_ids(self) -> "InspectGeometryDetailsRequest":
+    def validate_geometry_ids(self) -> InspectGeometryDetailsRequest:
         if not self.surface_ids and not self.edge_ids:
             raise ValueError("At least one surface ID or edge ID is required.")
         for category, item_ids in (
@@ -876,7 +876,7 @@ class FindSurfacesRequest(InspectModelGeometryRequest):
     max_results: int = Field(default=20, ge=1, le=200)
 
     @model_validator(mode="after")
-    def validate_surface_filters(self) -> "FindSurfacesRequest":
+    def validate_surface_filters(self) -> FindSurfacesRequest:
         if len(self.surface_types) != len(set(self.surface_types)):
             raise ValueError("surface_types must not contain duplicates.")
         if (
@@ -994,7 +994,7 @@ class UdfVariantDimensionSpec(BaseModel):
     maximum: float
 
     @model_validator(mode="after")
-    def validate_range(self) -> "UdfVariantDimensionSpec":
+    def validate_range(self) -> UdfVariantDimensionSpec:
         if not math.isfinite(self.minimum) or not math.isfinite(self.maximum):
             raise ValueError("UDF dimension limits must be finite.")
         if self.minimum > self.maximum:
@@ -1036,7 +1036,7 @@ class UdfManifest(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_unique_contract(self) -> "UdfManifest":
+    def validate_unique_contract(self) -> UdfManifest:
         versions = [version.strip().casefold() for version in self.qualified_creo_versions]
         if any(not version for version in versions):
             raise ValueError("qualified_creo_versions must not contain blank values.")
@@ -1093,7 +1093,7 @@ class UdfVariantDimensionBinding(BaseModel):
     value: float
 
     @model_validator(mode="after")
-    def validate_finite_value(self) -> "UdfVariantDimensionBinding":
+    def validate_finite_value(self) -> UdfVariantDimensionBinding:
         if not math.isfinite(self.value):
             raise ValueError("UDF variant dimension values must be finite.")
         return self
@@ -1114,7 +1114,7 @@ class PlaceUdfRequest(InspectModelGeometryRequest):
     confirmation: Literal["place_qualified_udf"]
 
     @model_validator(mode="after")
-    def validate_unique_bindings(self) -> "PlaceUdfRequest":
+    def validate_unique_bindings(self) -> PlaceUdfRequest:
         prompts = [reference.prompt.casefold() for reference in self.references]
         if len(prompts) != len(set(prompts)):
             raise ValueError("UDF reference bindings must use unique prompts.")
@@ -1177,7 +1177,7 @@ class DimensionUpdate(BaseModel):
     unit: Literal["mm", "degree", "unitless"] = "mm"
 
     @model_validator(mode="after")
-    def validate_finite_value(self) -> "DimensionUpdate":
+    def validate_finite_value(self) -> DimensionUpdate:
         if not math.isfinite(self.value):
             raise ValueError("Dimension update values must be finite.")
         return self
@@ -1197,7 +1197,7 @@ class ParameterUpdate(BaseModel):
     value: str | int | float | bool
 
     @model_validator(mode="after")
-    def validate_typed_value(self) -> "ParameterUpdate":
+    def validate_typed_value(self) -> ParameterUpdate:
         valid = {
             "string": isinstance(self.value, str),
             "integer": isinstance(self.value, int) and not isinstance(self.value, bool),
@@ -1226,7 +1226,7 @@ class UpdateModelMetadataRequest(InspectModelGeometryRequest):
     confirmation: Literal["update_model_metadata"]
 
     @model_validator(mode="after")
-    def validate_unique_updates(self) -> "UpdateModelMetadataRequest":
+    def validate_unique_updates(self) -> UpdateModelMetadataRequest:
         if not self.renames and not self.dimensions and not self.parameters:
             raise ValueError("At least one rename, dimension, or parameter update is required.")
         item_keys = [(item.item_type, item.item_id) for item in self.renames]
@@ -1281,7 +1281,7 @@ class FeatureSuppressionUpdate(BaseModel):
     suppressed: bool
 
     @model_validator(mode="after")
-    def validate_single_target(self) -> "FeatureSuppressionUpdate":
+    def validate_single_target(self) -> FeatureSuppressionUpdate:
         if (self.feature_name is None) == (self.item_id is None):
             raise ValueError(
                 "Provide exactly one of feature_name or item_id per suppression update."
@@ -1298,7 +1298,7 @@ class UpdateFeatureSuppressionRequest(InspectModelGeometryRequest):
     confirmation: Literal["update_feature_suppression"]
 
     @model_validator(mode="after")
-    def validate_unique_targets(self) -> "UpdateFeatureSuppressionRequest":
+    def validate_unique_targets(self) -> UpdateFeatureSuppressionRequest:
         keys = [
             (
                 item.feature_name.casefold()

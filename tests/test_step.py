@@ -19,7 +19,6 @@ from creo_mcp.models import (
 )
 from creo_mcp.step import inspect_step_file
 
-
 _PART_STEP = """ISO-10303-21;
 HEADER;
 FILE_NAME('sample_part','2026-10-08T12:00:00',('tester'),(''),

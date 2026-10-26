@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .concept_geometry import _box, _write_colored_concept_step, measure_shape_extent
 from .errors import CreoMcpError

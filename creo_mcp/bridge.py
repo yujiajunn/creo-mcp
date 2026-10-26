@@ -10,17 +10,18 @@ import tempfile
 import threading
 import time
 import winreg
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Literal
+from typing import Any, Literal
 
 from .cad import CAD_IMPORT_TYPE, resolve_cad_source
-from .concept_geometry import _write_colored_concept_step
 from .clearance_geometry import (
     CLEARANCE_AUTOMATION_REVISION,
     export_product_clearance_tray_step,
     plan_product_clearance_tray,
 )
+from .concept_geometry import _write_colored_concept_step
 from .errors import CreoMcpError
 from .geometry_dsl import (
     BuildGeometryRequest,
@@ -72,9 +73,9 @@ from .models import (
     ParameterUpdate,
     PlaceUdfRequest,
     PlaceUdfResult,
+    Point3D,
     ProductClearanceTrayPlan,
     ProductClearanceTrayPlanRequest,
-    Point3D,
     RunUdfQualificationRequest,
     SaveModelAsRequest,
     SaveModelAsResult,

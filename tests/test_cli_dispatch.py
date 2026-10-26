@@ -133,3 +133,45 @@ class BrokerRuntimeDirTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StdioEncodingTests(unittest.TestCase):
+    """The maintenance CLI prints Chinese hints.
+
+    With the console code page (often cp936 on zh-CN Windows) as the stream
+    encoding, redirecting or piping the output mangles every non-ASCII byte, so
+    agents and log files receive garbage. main() therefore pins UTF-8.
+    """
+
+    def test_both_streams_are_reconfigured_to_utf8(self) -> None:
+        calls: list[dict] = []
+
+        class _Stream:
+            def reconfigure(self, **kwargs):
+                calls.append(kwargs)
+
+        with mock.patch.object(server_module.sys, "stdout", _Stream()), mock.patch.object(
+            server_module.sys, "stderr", _Stream()
+        ):
+            server_module._configure_stdio_utf8()
+
+        self.assertEqual(len(calls), 2)
+        for kwargs in calls:
+            self.assertEqual(kwargs["encoding"], "utf-8")
+            self.assertEqual(kwargs["errors"], "replace")
+
+    def test_streams_without_reconfigure_are_skipped(self) -> None:
+        with mock.patch.object(server_module.sys, "stdout", io.StringIO()), mock.patch.object(
+            server_module.sys, "stderr", io.StringIO()
+        ):
+            server_module._configure_stdio_utf8()  # must not raise
+
+    def test_failing_reconfigure_is_tolerated(self) -> None:
+        class _Broken:
+            def reconfigure(self, **kwargs):
+                raise OSError("stream is closed")
+
+        with mock.patch.object(server_module.sys, "stdout", _Broken()), mock.patch.object(
+            server_module.sys, "stderr", _Broken()
+        ):
+            server_module._configure_stdio_utf8()  # must not abort the CLI

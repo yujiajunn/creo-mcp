@@ -187,7 +187,7 @@ class _FakeModel:
     def Regenerate(self, _instructions: object) -> None:
         self.regenerate_count += 1
 
-    def CopyAndRetrieve(self, name: str, _instructions: object) -> "_FakeModel":
+    def CopyAndRetrieve(self, name: str, _instructions: object) -> _FakeModel:
         assert self.session is not None
         copied = _FakeModel(self.unit)
         copied.session = self.session
@@ -303,9 +303,8 @@ class MaintenanceTests(unittest.TestCase):
 
         with patch(
             "creo_mcp.bridge._connected_session", return_value=_fake_connection(session)
-        ):
-            with self.assertRaisesRegex(CreoMcpError, "already exists"):
-                update_model_metadata(request)
+        ), self.assertRaisesRegex(CreoMcpError, "already exists"):
+            update_model_metadata(request)
 
         self.assertEqual(model.coordinate_systems[0].name, "CS0")
         self.assertEqual(model.dimensions[0].DimValue, 2.0)
@@ -386,9 +385,8 @@ class MaintenanceTests(unittest.TestCase):
             )
             with patch(
                 "creo_mcp.bridge._connected_session", return_value=_fake_connection(session)
-            ):
-                with self.assertRaisesRegex(CreoMcpError, "Refusing to overwrite"):
-                    save_model_as(request)
+            ), self.assertRaisesRegex(CreoMcpError, "Refusing to overwrite"):
+                save_model_as(request)
 
     def test_save_as_restores_working_directory(self) -> None:
         with tempfile.TemporaryDirectory() as raw_source, tempfile.TemporaryDirectory() as raw_target:
@@ -532,9 +530,8 @@ class FeatureSuppressionTests(unittest.TestCase):
 
         with patch(
             "creo_mcp.bridge._connected_session", return_value=_fake_connection(session)
-        ):
-            with self.assertRaisesRegex(CreoMcpError, "No feature named") as raised:
-                update_feature_suppression(request)
+        ), self.assertRaisesRegex(CreoMcpError, "No feature named") as raised:
+            update_feature_suppression(request)
 
         self.assertIn("SLOT1_CUT", str(raised.exception))
         self.assertEqual(slot.suppress_calls, 0)
@@ -552,9 +549,8 @@ class FeatureSuppressionTests(unittest.TestCase):
 
         with patch(
             "creo_mcp.bridge._connected_session", return_value=_fake_connection(session)
-        ):
-            with self.assertRaisesRegex(CreoMcpError, "owned by a family table"):
-                update_feature_suppression(request)
+        ), self.assertRaisesRegex(CreoMcpError, "owned by a family table"):
+            update_feature_suppression(request)
 
         self.assertEqual(feature.resume_calls, 0)
         self.assertEqual(model.regenerate_count, 0)
@@ -578,9 +574,8 @@ class FeatureSuppressionTests(unittest.TestCase):
 
         with patch(
             "creo_mcp.bridge._connected_session", return_value=_fake_connection(session)
-        ):
-            with self.assertRaisesRegex(CreoMcpError, "no feature suppression method") as raised:
-                update_feature_suppression(request)
+        ), self.assertRaisesRegex(CreoMcpError, "no feature suppression method") as raised:
+            update_feature_suppression(request)
 
         self.assertIn("Probed", str(raised.exception))
         self.assertEqual(model.regenerate_count, 0)
@@ -597,9 +592,8 @@ class FeatureSuppressionTests(unittest.TestCase):
 
         with patch(
             "creo_mcp.bridge._connected_session", return_value=_fake_connection(session)
-        ):
-            with self.assertRaisesRegex(CreoMcpError, "did not report the requested") as raised:
-                update_feature_suppression(request)
+        ), self.assertRaisesRegex(CreoMcpError, "did not report the requested") as raised:
+            update_feature_suppression(request)
 
         self.assertEqual(feature.suppress_calls, 1)
         self.assertEqual(model.regenerate_count, 1)
