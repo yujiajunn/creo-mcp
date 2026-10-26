@@ -105,7 +105,8 @@ class RunOperationRoutingTests(unittest.TestCase):
 class BrokerRuntimeDirTests(unittest.TestCase):
     def test_runtime_dir_honours_the_environment_override(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
-            override = Path(raw_directory) / "creo-mcp"
+            # broker.runtime_dir() resolves the configured value, so compare canonically.
+            override = Path(raw_directory).resolve(strict=False) / "creo-mcp"
             with mock.patch.dict(os.environ, {"CREO_MCP_RUNTIME_DIR": str(override)}):
                 self.assertEqual(broker.runtime_dir(), override)
                 self.assertEqual(broker.state_path(), override / "broker.json")

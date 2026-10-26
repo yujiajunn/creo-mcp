@@ -402,8 +402,11 @@ class MaintenanceTests(unittest.TestCase):
             ):
                 result = save_model_as(request)
 
-        self.assertEqual(session.directory, raw_source)
-        self.assertEqual(session.directory_changes, [raw_target, raw_source])
+        # bridge changes into and back out of resolved directories.
+        source = str(Path(raw_source).resolve(strict=False))
+        target = str(Path(raw_target).resolve(strict=False))
+        self.assertEqual(session.directory, source)
+        self.assertEqual(session.directory_changes, [target, source])
         self.assertTrue(result.saved_path.endswith("copy.prt.1"))
         self.assertTrue(session.window.activated)
         self.assertEqual(session.window.repaint_count, 1)
@@ -437,7 +440,8 @@ class MaintenanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw_directory:
             model = _FakeModel()
             session = _FakeSession(model, raw_directory)
-            output = Path(raw_directory) / "sample.step"
+            # export_model resolves output_path before handing it to Creo.
+            output = Path(raw_directory).resolve(strict=False) / "sample.step"
             request = ExportModelRequest(
                 output_path=str(output),
                 export_format="step",
@@ -450,7 +454,7 @@ class MaintenanceTests(unittest.TestCase):
 
             self.assertGreater(result.file_size_bytes, 0)
             self.assertTrue(output.is_file())
-            self.assertFalse((Path(raw_directory) / "sample.stp").exists())
+            self.assertFalse((output.parent / "sample.stp").exists())
             self.assertEqual(model.last_export[1], 15)
             self.assertEqual(model.last_export[0], str(output.with_suffix("")))
             self.assertFalse(result.saved)

@@ -211,7 +211,9 @@ class TemplateBridgeTests(unittest.TestCase):
 
     def test_native_model_path_supports_parts_assemblies_and_versions(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
-            directory = Path(raw_directory)
+            # _resolve_native_model_path canonicalises; on hosts whose TEMP carries an
+            # 8.3 alias (GitHub Windows runners) the raw spelling differs from it.
+            directory = Path(raw_directory).resolve(strict=False)
             part = directory / "sample.prt"
             assembly = directory / "sample.asm.3"
             part.touch()
