@@ -14,3 +14,18 @@ trail.txt*
 # Agent 临时探针脚本
 _probe_*.py
 _tmp_*.py
+
+# 本机 MCP 接入配置（含绝对路径，不进版本库）
+.mcp.json
+.claude/settings.local.json
+
+# Creo / MCP 落件产物：模型、导入件、Creo 日志、自动截图
+*.prt
+*.prt.[0-9]*
+*.asm
+*.asm.[0-9]*
+*.step
+*.stp
+*_log.xml
+*__out.log*
+/*.png
