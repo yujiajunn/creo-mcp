@@ -91,11 +91,12 @@ jobs:
           name: dist
           path: dist
 
-      # Re-pointing a tag re-runs this job; gh release create would then fail on the
-      # existing release, so create-if-missing and upload with --clobber instead.
+      # This job has no checkout, so `gh` has no repository context. GH_REPO supplies it
+      # explicitly; without it every gh call fails with "no GitHub remote".
       - name: Create or refresh the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
